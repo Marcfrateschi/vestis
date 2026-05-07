@@ -1078,392 +1078,735 @@ function TryOnTab({ wardrobe, session, showNotification }) {
   );
 }
 
-// ─── PACK TAB ───────────────────────────────────────────────────────────────
+// ─── PACK TAB (Trip Wizard) ─────────────────────────────────────────────────
+const TRANSPORTATION_OPTIONS = [
+  { id: "flying", emoji: "✈️", label: "Flying" },
+  { id: "driving", emoji: "🚗", label: "Driving" },
+  { id: "train", emoji: "🚆", label: "Train" },
+  { id: "cruise", emoji: "🚢", label: "Cruise" },
+  { id: "other", emoji: "🤷", label: "Other" },
+];
+
+const BAG_OPTIONS = [
+  { id: "personal", emoji: "🎒", label: "Personal item only", desc: "Fits under seat" },
+  { id: "carryon", emoji: "🧳", label: "Carry-on", desc: "Overhead bin, no checked" },
+  { id: "carryon_checked", emoji: "🧳➕", label: "Carry-on + checked", desc: "More room to pack" },
+  { id: "multiple_checked", emoji: "🧳🧳", label: "Multiple checked bags", desc: "No constraints" },
+];
+
+const SPECIAL_EVENT_OPTIONS = [
+  { id: "in_da_club", emoji: "🪩", label: "In Da Club", desc: "Bar / nightlife — look snappy" },
+  { id: "date_night", emoji: "💕", label: "Date night", desc: "Romantic dinner, want to impress" },
+  { id: "fancy_dinner", emoji: "🥂", label: "Fancy dinner", desc: "Upscale restaurant or special occasion" },
+  { id: "black_tie", emoji: "🎩", label: "Black tie event", desc: "Formal gala, wedding, ceremony" },
+  { id: "presentation", emoji: "💼", label: "Big presentation", desc: "Interview, pitch, important meeting" },
+  { id: "photo_op", emoji: "📸", label: "Photo opportunity", desc: "Family photos, milestone moment" },
+];
+
 function PackTab({ wardrobe, session, profile, showNotification }) {
-  const [destination, setDestination] = useState("");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [manualEvents, setManualEvents] = useState("");
-  const [activities, setActivities] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [plan, setPlan] = useState(null);
+  // Trip list & current trip
+  const [trips, setTrips] = useState([]);
+  const [view, setView] = useState("list"); // list | wizard | plan
+  const [currentTrip, setCurrentTrip] = useState(null);
 
+  // Calendar connection
   const [calendarConnected, setCalendarConnected] = useState(false);
-  const [calendarChecking, setCalendarChecking] = useState(true);
 
-  const [weatherData, setWeatherData] = useState(null);
-  const [calendarEvents, setCalendarEvents] = useState([]);
-  const [fetching, setFetching] = useState(false);
-
-  // Check if calendar is connected on load
+  // Load trips & calendar status
   useEffect(() => {
     if (!session?.user?.id) return;
-    (async () => {
-      const { data } = await supabase
-        .from("google_tokens")
-        .select("user_id")
-        .eq("user_id", session.user.id)
-        .maybeSingle();
-      setCalendarConnected(!!data);
-      setCalendarChecking(false);
-    })();
+    loadTrips();
+    checkCalendar();
   }, [session?.user?.id]);
 
-  const connectCalendar = () => {
-    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-    if (!clientId) {
-      showNotification("Google Client ID not configured");
-      return;
-    }
-    const redirectUri = `${window.location.origin}/`;
-    const scope = "https://www.googleapis.com/auth/calendar.readonly";
-    const url = `https://accounts.google.com/o/oauth2/v2/auth?` +
-      `client_id=${encodeURIComponent(clientId)}` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&response_type=code` +
-      `&scope=${encodeURIComponent(scope)}` +
-      `&access_type=offline` +
-      `&prompt=consent` +
-      `&state=vestis_calendar`;
-    window.location.href = url;
+  const loadTrips = async () => {
+    const { data } = await supabase
+      .from("trips")
+      .select("*")
+      .order("start_date", { ascending: false });
+    if (data) setTrips(data);
   };
 
-  const disconnectCalendar = async () => {
-    if (!session?.user?.id) return;
-    const { error } = await supabase.from("google_tokens").delete().eq("user_id", session.user.id);
-    if (error) {
-      showNotification("Disconnect failed: " + error.message);
-      return;
-    }
-    setCalendarConnected(false);
-    setCalendarEvents([]);
-    showNotification("Calendar disconnected");
+  const checkCalendar = async () => {
+    const { data } = await supabase
+      .from("google_tokens")
+      .select("user_id")
+      .eq("user_id", session.user.id)
+      .maybeSingle();
+    setCalendarConnected(!!data);
   };
 
-  const fetchTripData = async () => {
-    if (!destination.trim() || !startDate || !endDate) {
-      showNotification("Please fill in destination and dates");
-      return;
-    }
-    setFetching(true);
-    setWeatherData(null);
-    setCalendarEvents([]);
+  const newTrip = () => {
+    setCurrentTrip({
+      destination: "",
+      start_date: "",
+      end_date: "",
+      transportation: null,
+      bag_setup: null,
+      days: [],
+      special_events: [],
+      manual_notes: "",
+    });
+    setView("wizard");
+  };
 
-    try {
-      // Fetch weather
-      const weatherRes = await fetch("/api/weather", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ city: destination }),
-      });
-      const weatherJson = await weatherRes.json();
-      if (!weatherRes.ok) {
-        showNotification("Weather: " + (weatherJson.error || "lookup failed"));
-      } else {
-        // Filter weather days to trip range
-        const tripDays = weatherJson.days.filter(d => d.date >= startDate && d.date <= endDate);
-        setWeatherData({ ...weatherJson, days: tripDays.length > 0 ? tripDays : weatherJson.days.slice(0, 5) });
+  const editTrip = (trip) => {
+    setCurrentTrip(trip);
+    setView("wizard");
+  };
+
+  const viewPlan = (trip) => {
+    setCurrentTrip(trip);
+    setView("plan");
+  };
+
+  const deleteTrip = async (id) => {
+    if (!confirm("Delete this trip?")) return;
+    await supabase.from("trips").delete().eq("id", id);
+    setTrips(prev => prev.filter(t => t.id !== id));
+    showNotification("Trip deleted");
+  };
+
+  const saveTrip = async (trip) => {
+    if (trip.id) {
+      const { data } = await supabase
+        .from("trips")
+        .update(trip)
+        .eq("id", trip.id)
+        .select()
+        .single();
+      if (data) {
+        setTrips(prev => prev.map(t => t.id === data.id ? data : t));
+        return data;
       }
+    } else {
+      const { data } = await supabase
+        .from("trips")
+        .insert({ ...trip, user_id: session.user.id })
+        .select()
+        .single();
+      if (data) {
+        setTrips(prev => [data, ...prev]);
+        return data;
+      }
+    }
+    return trip;
+  };
+
+  if (view === "wizard") {
+    return (
+      <TripWizard
+        trip={currentTrip}
+        wardrobe={wardrobe}
+        profile={profile}
+        session={session}
+        calendarConnected={calendarConnected}
+        onSave={saveTrip}
+        onDone={(savedTrip) => { setCurrentTrip(savedTrip); setView("plan"); }}
+        onCancel={() => setView("list")}
+        showNotification={showNotification}
+      />
+    );
+  }
+
+  if (view === "plan" && currentTrip) {
+    return (
+      <TripPlanView
+        trip={currentTrip}
+        onEdit={() => setView("wizard")}
+        onBack={() => setView("list")}
+      />
+    );
+  }
+
+  // Trip list view
+  return (
+    <div className="tab-content">
+      <div className="section-header">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: "1rem" }}>
+          <div>
+            <h2 className="section-title">Pack Smart</h2>
+            <p className="section-sub">Build a trip, get a packing plan</p>
+          </div>
+          <button className="btn-primary btn-large" onClick={newTrip}>
+            <Icon.Suitcase /> New trip
+          </button>
+        </div>
+      </div>
+
+      {trips.length === 0 ? (
+        <div className="empty-state">
+          <p style={{ marginBottom: "1rem" }}>No trips yet.</p>
+          <button className="btn-primary" onClick={newTrip}>Plan your first trip</button>
+        </div>
+      ) : (
+        <div className="trip-list">
+          {trips.map(trip => (
+            <div key={trip.id} className="trip-card">
+              <div className="trip-card-main" onClick={() => trip.generated_plan ? viewPlan(trip) : editTrip(trip)}>
+                <div className="trip-card-dest">{trip.destination}</div>
+                <div className="trip-card-dates">
+                  {formatDate(trip.start_date)} – {formatDate(trip.end_date)}
+                </div>
+                <div className="trip-card-meta">
+                  {trip.transportation && <span>{TRANSPORTATION_OPTIONS.find(t => t.id === trip.transportation)?.emoji}</span>}
+                  {trip.bag_setup && <span>{BAG_OPTIONS.find(b => b.id === trip.bag_setup)?.emoji}</span>}
+                  {trip.generated_plan ? <span className="trip-card-badge">✓ Planned</span> : <span className="trip-card-badge trip-draft">Draft</span>}
+                </div>
+              </div>
+              <button className="trip-card-delete" onClick={() => deleteTrip(trip.id)} title="Delete">
+                <Icon.Trash />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return "";
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+// ─── TRIP WIZARD ────────────────────────────────────────────────────────────
+function TripWizard({ trip, wardrobe, profile, session, calendarConnected, onSave, onDone, onCancel, showNotification }) {
+  const [step, setStep] = useState(1);
+  const [destination, setDestination] = useState(trip.destination || "");
+  const [startDate, setStartDate] = useState(trip.start_date || "");
+  const [endDate, setEndDate] = useState(trip.end_date || "");
+  const [transportation, setTransportation] = useState(trip.transportation || null);
+  const [bagSetup, setBagSetup] = useState(trip.bag_setup || null);
+  const [days, setDays] = useState(trip.days || []);
+  const [specialEvents, setSpecialEvents] = useState(trip.special_events || []);
+  const [manualNotes, setManualNotes] = useState(trip.manual_notes || "");
+  const [generating, setGenerating] = useState(false);
+
+  const totalSteps = 5;
+  const isFlying = transportation === "flying";
+
+  // Initialize days array when dates set
+  useEffect(() => {
+    if (startDate && endDate && days.length === 0) {
+      const start = new Date(startDate + "T00:00:00");
+      const end = new Date(endDate + "T00:00:00");
+      const numDays = Math.round((end - start) / (1000 * 60 * 60 * 24)) + 1;
+      if (numDays > 0 && numDays <= 30) {
+        const dayObjs = [];
+        for (let i = 0; i < numDays; i++) {
+          const d = new Date(start);
+          d.setDate(start.getDate() + i);
+          dayObjs.push({
+            date: d.toISOString().split("T")[0],
+            mode: "all_day",
+            activities: [],
+            morning: [],
+            afternoon: [],
+            evening: [],
+          });
+        }
+        setDays(dayObjs);
+      }
+    }
+  }, [startDate, endDate]);
+
+  const updateDay = (idx, updater) => {
+    setDays(prev => prev.map((d, i) => i === idx ? { ...d, ...updater } : d));
+  };
+
+  const toggleDayActivity = (idx, slot, activityId) => {
+    setDays(prev => prev.map((d, i) => {
+      if (i !== idx) return d;
+      const list = d[slot] || [];
+      return {
+        ...d,
+        [slot]: list.includes(activityId) ? list.filter(a => a !== activityId) : [...list, activityId]
+      };
+    }));
+  };
+
+  const toggleSpecialEvent = (eventId) => {
+    setSpecialEvents(prev => {
+      const existing = prev.find(e => e.id === eventId);
+      if (existing) {
+        return prev.filter(e => e.id !== eventId);
+      }
+      return [...prev, { id: eventId, day: null }];
+    });
+  };
+
+  const setSpecialEventDay = (eventId, day) => {
+    setSpecialEvents(prev => prev.map(e => e.id === eventId ? { ...e, day } : e));
+  };
+
+  const canAdvance = () => {
+    if (step === 1) return destination.trim() && startDate && endDate && new Date(endDate) >= new Date(startDate);
+    if (step === 2) return !!transportation && (!isFlying || !!bagSetup);
+    if (step === 3) return days.length > 0;
+    return true;
+  };
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      // Save trip first
+      let saved = await onSave({
+        ...trip,
+        destination,
+        start_date: startDate,
+        end_date: endDate,
+        transportation,
+        bag_setup: bagSetup,
+        days,
+        special_events: specialEvents,
+        manual_notes: manualNotes,
+      });
+
+      // Fetch weather
+      let weatherData = null;
+      try {
+        const weatherRes = await fetch("/api/weather", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ city: destination }),
+        });
+        const wj = await weatherRes.json();
+        if (weatherRes.ok) {
+          const tripDays = wj.days.filter(d => d.date >= startDate && d.date <= endDate);
+          weatherData = { ...wj, days: tripDays.length > 0 ? tripDays : wj.days.slice(0, 5) };
+        }
+      } catch {}
 
       // Fetch calendar events if connected
+      let calendarEvents = [];
       if (calendarConnected) {
-        const { data: tokenRow } = await supabase
-          .from("google_tokens")
-          .select("*")
-          .eq("user_id", session.user.id)
-          .single();
-
-        if (tokenRow) {
-          const calRes = await fetch("/api/calendar", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              access_token: tokenRow.access_token,
-              refresh_token: tokenRow.refresh_token,
-              time_min: new Date(startDate + "T00:00:00").toISOString(),
-              time_max: new Date(endDate + "T23:59:59").toISOString(),
-            }),
-          });
-          const calJson = await calRes.json();
-          if (calRes.ok) {
-            setCalendarEvents(calJson.events || []);
-            // Update token if it was refreshed
-            if (calJson.new_access_token) {
+        try {
+          const { data: tokenRow } = await supabase
+            .from("google_tokens")
+            .select("*")
+            .eq("user_id", session.user.id)
+            .single();
+          if (tokenRow) {
+            const calRes = await fetch("/api/calendar", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                access_token: tokenRow.access_token,
+                refresh_token: tokenRow.refresh_token,
+                time_min: new Date(startDate + "T00:00:00").toISOString(),
+                time_max: new Date(endDate + "T23:59:59").toISOString(),
+              }),
+            });
+            const cj = await calRes.json();
+            if (calRes.ok) calendarEvents = cj.events || [];
+            if (cj.new_access_token) {
               await supabase.from("google_tokens").update({
-                access_token: calJson.new_access_token,
-                expires_at: new Date(Date.now() + (calJson.expires_in || 3600) * 1000).toISOString(),
+                access_token: cj.new_access_token,
+                expires_at: new Date(Date.now() + (cj.expires_in || 3600) * 1000).toISOString(),
               }).eq("user_id", session.user.id);
             }
-          } else {
-            showNotification("Calendar: " + (calJson.error || "fetch failed"));
           }
-        }
+        } catch {}
       }
-    } catch (err) {
-      showNotification("Fetch failed: " + err.message);
-    } finally {
-      setFetching(false);
-    }
-  };
 
-  const generatePlan = async () => {
-    if (!destination.trim() || !startDate || !endDate) {
-      showNotification("Please fill in destination and dates");
-      return;
-    }
-    setLoading(true);
-    try {
-      const wardrobeText = wardrobe.map(i => `- ${i.name} (${i.category}, ${i.color})`).join("\n");
+      // Build the AI prompt
+      const wardrobeText = wardrobe.map(i => `- ${i.name} (${i.category}, ${i.color}, ${i.style})`).join("\n");
+      const transport = TRANSPORTATION_OPTIONS.find(t => t.id === transportation)?.label || "";
+      const bag = BAG_OPTIONS.find(b => b.id === bagSetup);
+      const bagNote = bag ? `BAG: ${bag.label} (${bag.desc})` : "";
+      const styleNote = profile?.style_preference === "mens"
+        ? "STYLE PREFERENCE: Men's clothing categories"
+        : profile?.style_preference === "womens"
+        ? "STYLE PREFERENCE: Women's clothing categories"
+        : "STYLE PREFERENCE: Mix of styles";
 
       const weatherSummary = weatherData
-        ? `LOCATION: ${weatherData.location}\nFORECAST:\n${weatherData.days.map(d => `  ${d.date}: ${d.temp_low}–${d.temp_high}°F, ${d.conditions}${d.rain_mm > 0 ? `, ${d.rain_mm}mm rain` : ""}`).join("\n")}`
-        : `LOCATION: ${destination}\nWEATHER: not fetched`;
+        ? `LOCATION: ${weatherData.location}\nFORECAST:\n${weatherData.days.map(d => `  ${d.date}: ${d.temp_low}-${d.temp_high}°F, ${d.conditions}${d.rain_mm > 0 ? `, ${d.rain_mm}mm rain` : ""}`).join("\n")}`
+        : `LOCATION: ${destination}\nWEATHER: not available`;
 
-      const eventsList = [];
-      if (calendarEvents.length > 0) {
-        for (const ev of calendarEvents) {
-          const start = ev.start?.dateTime || ev.start?.date;
-          const summary = ev.summary || "(no title)";
-          const desc = ev.description ? ` — ${ev.description.slice(0, 100)}` : "";
-          eventsList.push(`  ${start}: ${summary}${desc}`);
+      const daysText = days.map((d, i) => {
+        const dayNum = i + 1;
+        const calForDay = calendarEvents.filter(ev => {
+          const start = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
+          return start === d.date;
+        }).map(ev => ev.summary).filter(Boolean);
+
+        if (d.mode === "split") {
+          const m = d.morning?.map(a => ACTIVITY_OPTIONS.find(o => o.id === a)?.label).filter(Boolean).join(", ") || "(none)";
+          const a = d.afternoon?.map(a => ACTIVITY_OPTIONS.find(o => o.id === a)?.label).filter(Boolean).join(", ") || "(none)";
+          const e = d.evening?.map(a => ACTIVITY_OPTIONS.find(o => o.id === a)?.label).filter(Boolean).join(", ") || "(none)";
+          return `Day ${dayNum} (${d.date}):\n  Morning: ${m}\n  Afternoon: ${a}\n  Evening: ${e}${calForDay.length ? `\n  Calendar: ${calForDay.join("; ")}` : ""}`;
         }
-      }
-      if (activities.length > 0) {
-        const activityLabels = activities
-          .map(id => ACTIVITY_OPTIONS.find(a => a.id === id)?.label)
-          .filter(Boolean)
-          .join(", ");
-        eventsList.push(`Planned activities: ${activityLabels}`);
-      }
-      if (manualEvents.trim()) {
-        eventsList.push(`Additional notes: ${manualEvents}`);
-      }
-      const eventsSummary = eventsList.length > 0 ? eventsList.join("\n") : "No specific events scheduled.";
+        const acts = d.activities?.map(a => ACTIVITY_OPTIONS.find(o => o.id === a)?.label).filter(Boolean).join(", ") || "(unspecified)";
+        return `Day ${dayNum} (${d.date}): ${acts}${calForDay.length ? ` | Calendar: ${calForDay.join("; ")}` : ""}`;
+      }).join("\n");
 
-      const days = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1;
-
-      const styleNote = profile?.style_preference === "mens"
-        ? "STYLE PREFERENCE: Men's clothing categories (suits, shirts, ties, oxfords, etc.)"
-        : profile?.style_preference === "womens"
-        ? "STYLE PREFERENCE: Women's clothing categories (dresses, skirts, blouses, heels, etc.)"
-        : "STYLE PREFERENCE: Mix and match across categories";
+      const specialEventsText = specialEvents.length > 0
+        ? specialEvents.map(e => {
+            const opt = SPECIAL_EVENT_OPTIONS.find(o => o.id === e.id);
+            const dayNote = e.day ? ` (Day ${e.day})` : "";
+            return `  ★ ${opt?.label}${dayNote}: ${opt?.desc}`;
+          }).join("\n")
+        : "  None";
 
       const response = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
-          max_tokens: 2500,
+          max_tokens: 3000,
           messages: [{
             role: "user",
-            content: `Build a smart packing plan. Goal: minimize overpacking by finding versatile pieces that work across multiple events and weather conditions.
+            content: `Build a smart packing plan for this trip.
 
 DESTINATION: ${destination}
-TRIP DATES: ${startDate} to ${endDate} (${days} days)
+DATES: ${startDate} to ${endDate} (${days.length} days)
+TRANSPORTATION: ${transport}
+${bagNote}
 ${styleNote}
 
 ${weatherSummary}
 
-EVENTS / ACTIVITIES:
-${eventsSummary}
+DAILY ACTIVITIES:
+${daysText}
+
+SPECIAL EVENTS (give these days extra attention with sharper outfits):
+${specialEventsText}
+
+${manualNotes ? `ADDITIONAL NOTES: ${manualNotes}` : ""}
 
 WARDROBE (${wardrobe.length} items):
 ${wardrobeText}
 
 Build a day-by-day plan that:
-- Uses real weather data if provided (cold = layers, rain = waterproof, etc.)
-- Matches outfits to actual events and planned activities
-- Reuses versatile pieces across multiple days
+- Honors weather (cold = layers, rain = waterproof, etc.)
+- Matches outfits precisely to scheduled activities
+- For SPECIAL EVENTS, deliver the most considered, sharpest outfit possible — these are moments the user wants to feel great
+- Reuses versatile pieces across days when possible
+- Respects bag constraints: carry-on requires ruthless minimalism; checked bags allow flexibility
 - Identifies what NOT to pack (saves space)
 
 Respond ONLY with valid JSON, no markdown:
 {
-  "summary": "one-line trip strategy that mentions the actual weather and key activities",
-  "days": [{"day": 1, "date": "YYYY-MM-DD", "weather": "brief weather note", "event": "activity for the day", "outfit": ["item names from wardrobe"], "note": "why this works"}],
-  "essentials": ["versatile pieces to pack that work for multiple days"],
-  "skip_list": ["items you might think to pack but don't need, with reasons"]
+  "summary": "one-line trip strategy mentioning weather, transport, and key moments",
+  "days": [{"day": 1, "date": "YYYY-MM-DD", "weather": "brief", "activities": "what's happening", "outfit": ["item names"], "note": "why this works", "is_special": false}],
+  "essentials": ["versatile pieces to pack"],
+  "skip_list": ["items not to pack with reasons"],
+  "special_callouts": ["highlight any special-event outfits and why they shine"]
 }`
           }]
         })
       });
+
       const data = await response.json();
       if (!response.ok || !data.content || !data.content[0]) {
-        const errMsg = data.error || data.detail?.error?.message || JSON.stringify(data).slice(0, 300);
-        throw new Error(errMsg);
+        throw new Error(data.error || data.detail?.error?.message || "AI generation failed");
       }
       const text = data.content[0].text.replace(/```json|```/g, "").trim();
-      setPlan(JSON.parse(text));
+      const plan = JSON.parse(text);
+
+      // Save updated trip with weather, calendar, plan
+      const finalTrip = await onSave({
+        ...saved,
+        weather_data: weatherData,
+        calendar_events: calendarEvents,
+        generated_plan: plan,
+      });
+
+      onDone(finalTrip);
     } catch (err) {
-      showNotification("Packing failed: " + err.message);
+      showNotification("Plan failed: " + err.message);
     } finally {
-      setLoading(false);
+      setGenerating(false);
     }
   };
 
   return (
     <div className="tab-content">
-      <div className="section-header">
-        <h2 className="section-title">Pack Smart</h2>
-        <p className="section-sub">Calendar-aware, weather-smart packing</p>
+      <div className="wizard-header">
+        <button className="btn-ghost" onClick={onCancel}>← Cancel</button>
+        <div className="wizard-progress">
+          {[1,2,3,4,5].map(n => (
+            <div key={n} className={`wizard-dot ${step >= n ? "wizard-dot-active" : ""} ${step === n ? "wizard-dot-current" : ""}`}>{n}</div>
+          ))}
+        </div>
       </div>
 
-      {/* Calendar connection status */}
-      {!calendarChecking && (
-        <div className="calendar-status">
-          {calendarConnected ? (
-            <>
-              <span className="status-dot"></span>
-              <span>Google Calendar connected</span>
-              <button className="change-key-btn" onClick={disconnectCalendar}>Disconnect</button>
-            </>
-          ) : (
-            <>
-              <span style={{ color: "#6b6b6b", fontSize: "0.875rem" }}>Calendar not connected</span>
-              <button className="btn-ghost" style={{ marginLeft: "auto" }} onClick={connectCalendar}>
-                Connect Google Calendar
-              </button>
-            </>
-          )}
+      {step === 1 && (
+        <div className="wizard-step">
+          <h2 className="wizard-title">Where & when?</h2>
+          <p className="wizard-sub">Let's start with the basics.</p>
+          <label className="auth-label">
+            Destination
+            <input className="auth-input" value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Paris, France" autoFocus />
+          </label>
+          <div className="pack-row">
+            <label className="auth-label">
+              Start date
+              <input className="auth-input" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            </label>
+            <label className="auth-label">
+              End date
+              <input className="auth-input" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            </label>
+          </div>
         </div>
       )}
 
-      <div className="pack-form">
-        <label className="auth-label">
-          Destination
-          <input
-            className="auth-input"
-            value={destination}
-            onChange={(e) => setDestination(e.target.value)}
-            placeholder="Paris, France"
-          />
-        </label>
-        <div className="pack-row">
-          <label className="auth-label">
-            Start date
-            <input
-              className="auth-input"
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-            />
-          </label>
-          <label className="auth-label">
-            End date
-            <input
-              className="auth-input"
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-            />
-          </label>
-        </div>
-
-        <button className="btn-ghost" onClick={fetchTripData} disabled={fetching}>
-          {fetching ? "Fetching trip data..." : "Pull weather + calendar events"}
-        </button>
-
-        {weatherData && (
-          <div className="trip-data-block">
-            <div className="trip-data-label">📍 {weatherData.location}</div>
-            <div className="trip-data-content">
-              {weatherData.days.map((d, i) => (
-                <div key={i} className="weather-day">
-                  <span className="weather-date">{d.date}</span>
-                  <span>{d.temp_low}–{d.temp_high}°F · {d.conditions}{d.rain_mm > 0 ? ` · ${d.rain_mm}mm rain` : ""}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {calendarEvents.length > 0 && (
-          <div className="trip-data-block">
-            <div className="trip-data-label">🗓️ {calendarEvents.length} calendar events found</div>
-            <div className="trip-data-content">
-              {calendarEvents.slice(0, 6).map((ev, i) => {
-                const when = ev.start?.dateTime || ev.start?.date;
-                return (
-                  <div key={i} className="weather-day">
-                    <span className="weather-date">{when?.slice(0, 10)}</span>
-                    <span>{ev.summary || "(no title)"}</span>
-                  </div>
-                );
-              })}
-              {calendarEvents.length > 6 && <div className="weather-day"><span>... and {calendarEvents.length - 6} more</span></div>}
-            </div>
-          </div>
-        )}
-
-        <div className="activity-selector">
-          <label className="field-label-strong">What will you be doing? <span style={{ fontWeight: 400, color: "var(--ink-muted)" }}>(tap all that apply)</span></label>
-          <div className="activity-grid">
-            {ACTIVITY_OPTIONS.map(act => (
-              <button
-                key={act.id}
-                type="button"
-                className={`activity-chip ${activities.includes(act.id) ? "activity-selected" : ""}`}
-                onClick={() => {
-                  setActivities(prev =>
-                    prev.includes(act.id)
-                      ? prev.filter(a => a !== act.id)
-                      : [...prev, act.id]
-                  );
-                }}
-              >
-                <span className="activity-emoji">{act.emoji}</span>
-                <span className="activity-label">{act.label}</span>
+      {step === 2 && (
+        <div className="wizard-step">
+          <h2 className="wizard-title">How are you getting there?</h2>
+          <p className="wizard-sub">This affects packing strategy.</p>
+          <div className="transport-grid">
+            {TRANSPORTATION_OPTIONS.map(t => (
+              <button key={t.id} type="button"
+                className={`transport-card ${transportation === t.id ? "transport-selected" : ""}`}
+                onClick={() => setTransportation(t.id)}>
+                <span className="transport-emoji">{t.emoji}</span>
+                <span>{t.label}</span>
               </button>
             ))}
           </div>
-        </div>
 
-        <label className="auth-label">
-          Additional notes (optional)
-          <textarea
-            className="auth-input"
-            rows={3}
-            value={manualEvents}
-            onChange={(e) => setManualEvents(e.target.value)}
-            placeholder="Beach day Tuesday. Black tie gala Thursday."
-          />
-        </label>
-        <button className="btn-primary btn-large" onClick={generatePlan} disabled={loading}>
-          {loading ? "Building plan..." : <><Icon.Suitcase /> Build my packing plan</>}
-        </button>
-      </div>
-
-      {plan && (
-        <div className="pack-plan">
-          <div className="plan-summary">{plan.summary}</div>
-
-          <h3 className="plan-heading">Day by day</h3>
-          {plan.days.map((d, i) => (
-            <div key={i} className="plan-day">
-              <div className="plan-day-num">Day {d.day}</div>
-              <div className="plan-day-body">
-                {d.date && <div className="plan-date">{d.date}{d.weather ? ` · ${d.weather}` : ""}</div>}
-                <div className="plan-event">{d.event}</div>
-                <div className="plan-outfit">{d.outfit.join(" · ")}</div>
-                <div className="plan-note">{d.note}</div>
+          {isFlying && (
+            <div style={{ marginTop: "1.5rem" }}>
+              <h3 className="wizard-subtitle">What bag are you bringing?</h3>
+              <div className="bag-grid">
+                {BAG_OPTIONS.map(b => (
+                  <button key={b.id} type="button"
+                    className={`bag-card ${bagSetup === b.id ? "bag-selected" : ""}`}
+                    onClick={() => setBagSetup(b.id)}>
+                    <span className="bag-emoji">{b.emoji}</span>
+                    <div>
+                      <div className="bag-label">{b.label}</div>
+                      <div className="bag-desc">{b.desc}</div>
+                    </div>
+                  </button>
+                ))}
               </div>
             </div>
-          ))}
-
-          <h3 className="plan-heading">Pack these essentials</h3>
-          <ul className="plan-list">
-            {plan.essentials.map((e, i) => <li key={i}>{e}</li>)}
-          </ul>
-
-          {plan.skip_list && plan.skip_list.length > 0 && (
-            <>
-              <h3 className="plan-heading">Skip these (saves you space)</h3>
-              <ul className="plan-list plan-skip">
-                {plan.skip_list.map((s, i) => <li key={i}>{s}</li>)}
-              </ul>
-            </>
           )}
         </div>
       )}
+
+      {step === 3 && (
+        <div className="wizard-step">
+          <h2 className="wizard-title">Plan your days</h2>
+          <p className="wizard-sub">Pick activities for each day. Tap "Split into morning/afternoon/evening" if a day has multiple vibes.</p>
+          <div className="days-list">
+            {days.map((d, idx) => (
+              <DayCard
+                key={idx}
+                day={d}
+                dayNum={idx + 1}
+                onToggleAll={(actId) => {
+                  setDays(prev => prev.map((dy, i) => {
+                    if (i !== idx) return dy;
+                    const list = dy.activities || [];
+                    return { ...dy, activities: list.includes(actId) ? list.filter(a => a !== actId) : [...list, actId] };
+                  }));
+                }}
+                onToggleSlot={(slot, actId) => toggleDayActivity(idx, slot, actId)}
+                onSetMode={(mode) => updateDay(idx, { mode })}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {step === 4 && (
+        <div className="wizard-step">
+          <h2 className="wizard-title">Special events?</h2>
+          <p className="wizard-sub">Any moments where you want to look extra sharp? VESTIS will give these days extra attention.</p>
+          <div className="special-events-grid">
+            {SPECIAL_EVENT_OPTIONS.map(opt => {
+              const selected = specialEvents.find(e => e.id === opt.id);
+              return (
+                <div key={opt.id} className={`special-event-card ${selected ? "special-selected" : ""}`}>
+                  <button type="button" className="special-event-button"
+                    onClick={() => toggleSpecialEvent(opt.id)}>
+                    <span className="special-emoji">{opt.emoji}</span>
+                    <div>
+                      <div className="special-label">{opt.label}</div>
+                      <div className="special-desc">{opt.desc}</div>
+                    </div>
+                  </button>
+                  {selected && days.length > 0 && (
+                    <div className="special-day-picker">
+                      <span className="special-day-label">Which day?</span>
+                      <select
+                        className="special-day-select"
+                        value={selected.day || ""}
+                        onChange={(e) => setSpecialEventDay(opt.id, e.target.value ? Number(e.target.value) : null)}>
+                        <option value="">Any / not sure</option>
+                        {days.map((d, i) => (
+                          <option key={i} value={i + 1}>Day {i + 1} — {formatDate(d.date)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {step === 5 && (
+        <div className="wizard-step">
+          <h2 className="wizard-title">Review & generate</h2>
+          <p className="wizard-sub">Almost there. We'll pull live weather and calendar events, then build your plan.</p>
+
+          <div className="review-grid">
+            <div className="review-row"><strong>Destination</strong><span>{destination}</span></div>
+            <div className="review-row"><strong>Dates</strong><span>{formatDate(startDate)} – {formatDate(endDate)} ({days.length} days)</span></div>
+            <div className="review-row"><strong>Transport</strong><span>{TRANSPORTATION_OPTIONS.find(t => t.id === transportation)?.emoji} {TRANSPORTATION_OPTIONS.find(t => t.id === transportation)?.label}</span></div>
+            {bagSetup && <div className="review-row"><strong>Bag</strong><span>{BAG_OPTIONS.find(b => b.id === bagSetup)?.label}</span></div>}
+            <div className="review-row"><strong>Calendar</strong><span>{calendarConnected ? "✓ Will pull events" : "Not connected"}</span></div>
+            <div className="review-row"><strong>Special events</strong><span>{specialEvents.length > 0 ? specialEvents.map(e => SPECIAL_EVENT_OPTIONS.find(o => o.id === e.id)?.emoji).join(" ") : "None"}</span></div>
+          </div>
+
+          <label className="auth-label" style={{ marginTop: "1.5rem" }}>
+            Anything else? (optional)
+            <textarea className="auth-input" rows={3} value={manualNotes} onChange={(e) => setManualNotes(e.target.value)}
+              placeholder="Bringing my own toiletries. Don't forget my running shoes." />
+          </label>
+
+          <button className="btn-primary btn-large btn-full" style={{ marginTop: "1rem" }}
+            onClick={handleGenerate} disabled={generating}>
+            {generating ? "Building your plan... (15-30s)" : <><Icon.Sparkle /> Generate packing plan</>}
+          </button>
+        </div>
+      )}
+
+      <div className="wizard-nav">
+        {step > 1 && (
+          <button className="btn-ghost" onClick={() => setStep(step - 1)} disabled={generating}>← Back</button>
+        )}
+        {step < totalSteps && (
+          <button className="btn-primary" onClick={() => setStep(step + 1)} disabled={!canAdvance() || generating}
+            style={{ marginLeft: "auto" }}>
+            Next →
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── DAY CARD ────────────────────────────────────────────────────────────────
+function DayCard({ day, dayNum, onToggleAll, onToggleSlot, onSetMode }) {
+  const isSplit = day.mode === "split";
+  return (
+    <div className="day-card">
+      <div className="day-card-header">
+        <div className="day-card-title">
+          <span className="day-card-num">Day {dayNum}</span>
+          <span className="day-card-date">{formatDate(day.date)}</span>
+        </div>
+        <button type="button" className="day-card-toggle"
+          onClick={() => onSetMode(isSplit ? "all_day" : "split")}>
+          {isSplit ? "← Single all-day" : "Split into morning/afternoon/evening"}
+        </button>
+      </div>
+
+      {!isSplit ? (
+        <div className="day-activities">
+          {ACTIVITY_OPTIONS.map(act => (
+            <button key={act.id} type="button"
+              className={`activity-chip ${day.activities?.includes(act.id) ? "activity-selected" : ""}`}
+              onClick={() => onToggleAll(act.id)}>
+              <span className="activity-emoji">{act.emoji}</span>
+              <span className="activity-label">{act.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        ["morning", "afternoon", "evening"].map(slot => (
+          <div key={slot} className="day-slot">
+            <div className="day-slot-label">{slot}</div>
+            <div className="day-activities">
+              {ACTIVITY_OPTIONS.map(act => (
+                <button key={act.id} type="button"
+                  className={`activity-chip activity-chip-sm ${day[slot]?.includes(act.id) ? "activity-selected" : ""}`}
+                  onClick={() => onToggleSlot(slot, act.id)}>
+                  <span className="activity-emoji">{act.emoji}</span>
+                  <span className="activity-label">{act.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+// ─── TRIP PLAN VIEW ─────────────────────────────────────────────────────────
+function TripPlanView({ trip, onEdit, onBack }) {
+  const plan = trip.generated_plan;
+  if (!plan) {
+    return (
+      <div className="tab-content">
+        <button className="btn-ghost" onClick={onBack}>← Back to trips</button>
+        <p style={{ marginTop: "2rem" }}>No plan generated yet for this trip.</p>
+        <button className="btn-primary" onClick={onEdit}>Open trip wizard</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tab-content">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem", flexWrap: "wrap", gap: "0.75rem" }}>
+        <button className="btn-ghost" onClick={onBack}>← All trips</button>
+        <button className="btn-ghost" onClick={onEdit}>Edit trip</button>
+      </div>
+      <div className="section-header">
+        <h2 className="section-title">{trip.destination}</h2>
+        <p className="section-sub">{formatDate(trip.start_date)} – {formatDate(trip.end_date)}</p>
+      </div>
+
+      <div className="pack-plan">
+        <div className="plan-summary">{plan.summary}</div>
+
+        <h3 className="plan-heading">Day by day</h3>
+        {plan.days?.map((d, i) => (
+          <div key={i} className={`plan-day ${d.is_special ? "plan-day-special" : ""}`}>
+            <div className="plan-day-num">Day {d.day}{d.is_special && " ✨"}</div>
+            <div className="plan-day-body">
+              {d.date && <div className="plan-date">{d.date}{d.weather ? ` · ${d.weather}` : ""}</div>}
+              <div className="plan-event">{d.activities || d.event}</div>
+              <div className="plan-outfit">{(d.outfit || []).join(" · ")}</div>
+              <div className="plan-note">{d.note}</div>
+            </div>
+          </div>
+        ))}
+
+        {plan.special_callouts && plan.special_callouts.length > 0 && (
+          <>
+            <h3 className="plan-heading">✨ Standout moments</h3>
+            <ul className="plan-list">
+              {plan.special_callouts.map((s, i) => <li key={i} className="plan-callout">{s}</li>)}
+            </ul>
+          </>
+        )}
+
+        <h3 className="plan-heading">Pack these essentials</h3>
+        <ul className="plan-list">
+          {plan.essentials?.map((e, i) => <li key={i}>{e}</li>)}
+        </ul>
+
+        {plan.skip_list && plan.skip_list.length > 0 && (
+          <>
+            <h3 className="plan-heading">Skip these</h3>
+            <ul className="plan-list plan-skip">
+              {plan.skip_list.map((s, i) => <li key={i}>{s}</li>)}
+            </ul>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -2123,13 +2466,225 @@ body {
 
 .empty-state { text-align: center; padding: 4rem 2rem; color: var(--ink-muted); }
 
+/* ─── TRIP LIST & WIZARD ─── */
+.trip-list { display: grid; gap: 0.875rem; }
+.trip-card {
+  display: flex; align-items: stretch;
+  background: white; border: 1px solid var(--line);
+  border-radius: 14px; overflow: hidden;
+  transition: all 0.2s;
+}
+.trip-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.trip-card-main {
+  flex: 1; padding: 1.25rem 1.5rem; cursor: pointer;
+}
+.trip-card-dest {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.5rem; font-weight: 500; margin-bottom: 0.25rem;
+}
+.trip-card-dates {
+  font-size: 0.875rem; color: var(--ink-muted); margin-bottom: 0.625rem;
+}
+.trip-card-meta {
+  display: flex; gap: 0.625rem; align-items: center;
+  font-size: 0.875rem;
+}
+.trip-card-badge {
+  display: inline-block; padding: 0.125rem 0.625rem;
+  background: var(--success); color: white;
+  border-radius: 100px; font-size: 0.6875rem;
+  font-weight: 600; letter-spacing: 0.05em;
+}
+.trip-draft { background: var(--ink-muted); }
+.trip-card-delete {
+  background: transparent; border: none; border-left: 1px solid var(--line);
+  padding: 0 1rem; cursor: pointer; color: var(--ink-muted);
+  transition: all 0.2s;
+}
+.trip-card-delete:hover { background: rgba(161, 59, 59, 0.08); color: var(--error); }
+
+.wizard-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 1.75rem; gap: 1rem;
+}
+.wizard-progress { display: flex; gap: 0.5rem; }
+.wizard-dot {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--cream-dark); color: var(--ink-muted);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.875rem; font-weight: 600;
+  transition: all 0.2s;
+}
+.wizard-dot-active { background: var(--ink); color: var(--cream); }
+.wizard-dot-current {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 4px rgba(26, 26, 26, 0.1);
+}
+
+.wizard-step {
+  background: white; border: 1px solid var(--line);
+  border-radius: 16px; padding: 2rem;
+  display: flex; flex-direction: column; gap: 1.25rem;
+  animation: fadeIn 0.3s ease;
+}
+.wizard-title {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 2rem; font-weight: 500; margin: 0;
+}
+.wizard-subtitle {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.375rem; font-weight: 500; margin: 0.5rem 0;
+}
+.wizard-sub {
+  color: var(--ink-muted); font-size: 0.9375rem;
+  margin: -0.5rem 0 0.5rem;
+}
+.wizard-nav {
+  display: flex; gap: 0.75rem; margin-top: 1.5rem;
+  align-items: center;
+}
+
+/* Transport */
+.transport-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+.transport-card {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 0.5rem; padding: 1.25rem 1rem; background: white;
+  border: 2px solid var(--line); border-radius: 12px;
+  font-family: inherit; font-size: 0.9375rem; font-weight: 500;
+  color: var(--ink); cursor: pointer; transition: all 0.2s;
+}
+.transport-card:hover { border-color: var(--accent-light); transform: translateY(-2px); }
+.transport-selected { border-color: var(--ink); background: var(--cream); }
+.transport-emoji { font-size: 2rem; }
+
+/* Bag */
+.bag-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0.625rem;
+}
+.bag-card {
+  display: flex; align-items: center; gap: 0.875rem;
+  padding: 0.875rem 1rem; background: white;
+  border: 2px solid var(--line); border-radius: 10px;
+  font-family: inherit; cursor: pointer; transition: all 0.2s;
+  text-align: left;
+}
+.bag-card:hover { border-color: var(--accent-light); }
+.bag-selected { border-color: var(--ink); background: var(--cream); }
+.bag-emoji { font-size: 1.5rem; }
+.bag-label { font-weight: 600; font-size: 0.875rem; margin-bottom: 0.125rem; }
+.bag-desc { font-size: 0.75rem; color: var(--ink-muted); }
+
+/* Days */
+.days-list { display: flex; flex-direction: column; gap: 0.875rem; }
+.day-card {
+  background: var(--cream); border: 1px solid var(--line);
+  border-radius: 12px; padding: 1rem 1.25rem;
+}
+.day-card-header {
+  display: flex; justify-content: space-between; align-items: center;
+  flex-wrap: wrap; gap: 0.625rem; margin-bottom: 0.875rem;
+}
+.day-card-title { display: flex; align-items: baseline; gap: 0.625rem; }
+.day-card-num {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.25rem; font-weight: 600; color: var(--accent);
+}
+.day-card-date { font-size: 0.875rem; color: var(--ink-muted); }
+.day-card-toggle {
+  background: transparent; border: none; cursor: pointer;
+  font-family: inherit; font-size: 0.75rem; color: var(--ink-soft);
+  text-decoration: underline; padding: 0.25rem;
+}
+.day-card-toggle:hover { color: var(--ink); }
+.day-activities {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.5rem;
+}
+.day-slot { margin-top: 0.875rem; }
+.day-slot-label {
+  font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.15em;
+  text-transform: uppercase; color: var(--accent);
+  margin-bottom: 0.5rem;
+}
+.activity-chip-sm { padding: 0.5rem 0.75rem; font-size: 0.75rem; }
+
+/* Special events */
+.special-events-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.75rem;
+}
+.special-event-card {
+  background: white; border: 2px solid var(--line);
+  border-radius: 12px; overflow: hidden; transition: all 0.2s;
+}
+.special-event-card.special-selected {
+  border-color: var(--gold);
+  background: linear-gradient(135deg, #fefaf2 0%, #ffffff 100%);
+}
+.special-event-button {
+  display: flex; align-items: center; gap: 0.875rem;
+  width: 100%; padding: 1rem 1.25rem;
+  background: transparent; border: none; cursor: pointer;
+  text-align: left; font-family: inherit;
+}
+.special-emoji { font-size: 1.75rem; }
+.special-label { font-weight: 600; font-size: 0.9375rem; margin-bottom: 0.125rem; }
+.special-desc { font-size: 0.75rem; color: var(--ink-muted); }
+.special-day-picker {
+  display: flex; align-items: center; gap: 0.625rem;
+  padding: 0.625rem 1.25rem 1rem;
+  border-top: 1px dashed var(--line);
+  background: rgba(193, 154, 107, 0.05);
+}
+.special-day-label {
+  font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.special-day-select {
+  flex: 1; padding: 0.5rem 0.75rem; border: 1px solid var(--line-strong);
+  border-radius: 8px; font-family: inherit; font-size: 0.8125rem;
+  background: white; cursor: pointer;
+}
+
+/* Review screen */
+.review-grid {
+  background: var(--cream); border-radius: 10px;
+  padding: 1.25rem; display: flex; flex-direction: column; gap: 0.625rem;
+}
+.review-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.5rem 0; border-bottom: 1px solid var(--line);
+  gap: 1rem; flex-wrap: wrap;
+}
+.review-row:last-child { border-bottom: none; }
+.review-row strong {
+  font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.review-row span { font-size: 0.9375rem; color: var(--ink); text-align: right; }
+
+.plan-day-special {
+  border: 2px solid var(--gold) !important;
+  background: linear-gradient(135deg, #fefaf2 0%, #ffffff 100%) !important;
+}
+.plan-callout {
+  border-left: 3px solid var(--gold) !important;
+  font-style: italic;
+}
+
 @media (max-width: 640px) {
   .upload-row { grid-template-columns: 1fr; }
   .pack-row { flex-direction: column; }
   .before-after { grid-template-columns: 1fr; }
   .section-title { font-size: 2rem; }
   .activity-grid { grid-template-columns: 1fr 1fr; }
+  .day-activities { grid-template-columns: 1fr 1fr; }
   .pref-btn span { display: none; }
+  .bag-grid { grid-template-columns: 1fr; }
+  .special-events-grid { grid-template-columns: 1fr; }
 }
 `;
 
