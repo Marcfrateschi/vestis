@@ -425,7 +425,7 @@ function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, showNotifica
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-5",
           max_tokens: 1000,
           messages: [{
             role: "user",
@@ -446,6 +446,10 @@ function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, showNotifica
         })
       });
       const data = await response.json();
+      if (!response.ok || !data.content || !data.content[0]) {
+        const errMsg = data.error || data.detail?.error?.message || JSON.stringify(data).slice(0, 300);
+        throw new Error(errMsg);
+      }
       const text = data.content[0].text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(text);
 
@@ -579,7 +583,7 @@ function StyleTab({ wardrobe, showNotification }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-5",
           max_tokens: 1500,
           messages: [{
             role: "user",
@@ -599,6 +603,10 @@ Respond ONLY with valid JSON, no markdown:
         })
       });
       const data = await response.json();
+      if (!response.ok || !data.content || !data.content[0]) {
+        const errMsg = data.error || data.detail?.error?.message || JSON.stringify(data).slice(0, 300);
+        throw new Error(errMsg);
+      }
       const text = data.content[0].text.replace(/```json|```/g, "").trim();
       setOutfit(JSON.parse(text));
     } catch (err) {
@@ -926,7 +934,7 @@ function PackTab({ wardrobe, showNotification }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-5",
           max_tokens: 2000,
           messages: [{
             role: "user",
@@ -951,6 +959,10 @@ Respond ONLY with valid JSON, no markdown:
         })
       });
       const data = await response.json();
+      if (!response.ok || !data.content || !data.content[0]) {
+        const errMsg = data.error || data.detail?.error?.message || JSON.stringify(data).slice(0, 300);
+        throw new Error(errMsg);
+      }
       const text = data.content[0].text.replace(/```json|```/g, "").trim();
       setPlan(JSON.parse(text));
     } catch (err) {
