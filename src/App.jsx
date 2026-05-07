@@ -259,6 +259,45 @@ function App() {
     return () => subscription.unsubscribe();
   }, []);
 
+  // Handle Google OAuth callback (from "Connect Calendar" flow)
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
+    if (code && state === "vestis_calendar" && session?.user?.id) {
+      (async () => {
+        try {
+          const redirectUri = `${window.location.origin}/`;
+          const tokenResponse = await fetch("/api/google-token", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code, redirect_uri: redirectUri }),
+          });
+          const tokenData = await tokenResponse.json();
+          if (!tokenResponse.ok) {
+            throw new Error(tokenData.error || "Token exchange failed");
+          }
+          const expiresAt = new Date(Date.now() + (tokenData.expires_in || 3600) * 1000).toISOString();
+          const { error } = await supabase.from("google_tokens").upsert({
+            user_id: session.user.id,
+            access_token: tokenData.access_token,
+            refresh_token: tokenData.refresh_token,
+            expires_at: expiresAt,
+            scope: tokenData.scope,
+          });
+          if (error) throw error;
+          showNotification("Google Calendar connected");
+        } catch (err) {
+          showNotification("Calendar connect failed: " + err.message);
+        } finally {
+          // Clean up the URL
+          window.history.replaceState({}, "", window.location.pathname);
+          setTab("pack");
+        }
+      })();
+    }
+  }, [session?.user?.id]);
+
   // Load wardrobe when session changes
   useEffect(() => {
     if (!session) { setWardrobe([]); return; }
@@ -386,7 +425,7 @@ function App() {
         )}
         {tab === "style" && <StyleTab wardrobe={wardrobe} showNotification={showNotification} />}
         {tab === "tryon" && <TryOnTab wardrobe={wardrobe} session={session} showNotification={showNotification} />}
-        {tab === "pack" && <PackTab wardrobe={wardrobe} showNotification={showNotification} />}
+        {tab === "pack" && <PackTab wardrobe={wardrobe} session={session} showNotification={showNotification} />}
       </main>
     </div>
   );
@@ -917,41 +956,192 @@ function TryOnTab({ wardrobe, session, showNotification }) {
 }
 
 // ─── PACK TAB ───────────────────────────────────────────────────────────────
-function PackTab({ wardrobe, showNotification }) {
+function PackTab({ wardrobe, session, showNotification }) {
   const [destination, setDestination] = useState("");
-  const [days, setDays] = useState(3);
-  const [weather, setWeather] = useState("");
-  const [events, setEvents] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [manualEvents, setManualEvents] = useState("");
   const [loading, setLoading] = useState(false);
   const [plan, setPlan] = useState(null);
 
+  const [calendarConnected, setCalendarConnected] = useState(false);
+  const [calendarChecking, setCalendarChecking] = useState(true);
+
+  const [weatherData, setWeatherData] = useState(null);
+  const [calendarEvents, setCalendarEvents] = useState([]);
+  const [fetching, setFetching] = useState(false);
+
+  // Check if calendar is connected on load
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    (async () => {
+      const { data } = await supabase
+        .from("google_tokens")
+        .select("user_id")
+        .eq("user_id", session.user.id)
+        .maybeSingle();
+      setCalendarConnected(!!data);
+      setCalendarChecking(false);
+    })();
+  }, [session?.user?.id]);
+
+  const connectCalendar = () => {
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    if (!clientId) {
+      showNotification("Google Client ID not configured");
+      return;
+    }
+    const redirectUri = `${window.location.origin}/`;
+    const scope = "https://www.googleapis.com/auth/calendar.readonly";
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?` +
+      `client_id=${encodeURIComponent(clientId)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&response_type=code` +
+      `&scope=${encodeURIComponent(scope)}` +
+      `&access_type=offline` +
+      `&prompt=consent` +
+      `&state=vestis_calendar`;
+    window.location.href = url;
+  };
+
+  const disconnectCalendar = async () => {
+    if (!session?.user?.id) return;
+    const { error } = await supabase.from("google_tokens").delete().eq("user_id", session.user.id);
+    if (error) {
+      showNotification("Disconnect failed: " + error.message);
+      return;
+    }
+    setCalendarConnected(false);
+    setCalendarEvents([]);
+    showNotification("Calendar disconnected");
+  };
+
+  const fetchTripData = async () => {
+    if (!destination.trim() || !startDate || !endDate) {
+      showNotification("Please fill in destination and dates");
+      return;
+    }
+    setFetching(true);
+    setWeatherData(null);
+    setCalendarEvents([]);
+
+    try {
+      // Fetch weather
+      const weatherRes = await fetch("/api/weather", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ city: destination }),
+      });
+      const weatherJson = await weatherRes.json();
+      if (!weatherRes.ok) {
+        showNotification("Weather: " + (weatherJson.error || "lookup failed"));
+      } else {
+        // Filter weather days to trip range
+        const tripDays = weatherJson.days.filter(d => d.date >= startDate && d.date <= endDate);
+        setWeatherData({ ...weatherJson, days: tripDays.length > 0 ? tripDays : weatherJson.days.slice(0, 5) });
+      }
+
+      // Fetch calendar events if connected
+      if (calendarConnected) {
+        const { data: tokenRow } = await supabase
+          .from("google_tokens")
+          .select("*")
+          .eq("user_id", session.user.id)
+          .single();
+
+        if (tokenRow) {
+          const calRes = await fetch("/api/calendar", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              access_token: tokenRow.access_token,
+              refresh_token: tokenRow.refresh_token,
+              time_min: new Date(startDate + "T00:00:00").toISOString(),
+              time_max: new Date(endDate + "T23:59:59").toISOString(),
+            }),
+          });
+          const calJson = await calRes.json();
+          if (calRes.ok) {
+            setCalendarEvents(calJson.events || []);
+            // Update token if it was refreshed
+            if (calJson.new_access_token) {
+              await supabase.from("google_tokens").update({
+                access_token: calJson.new_access_token,
+                expires_at: new Date(Date.now() + (calJson.expires_in || 3600) * 1000).toISOString(),
+              }).eq("user_id", session.user.id);
+            }
+          } else {
+            showNotification("Calendar: " + (calJson.error || "fetch failed"));
+          }
+        }
+      }
+    } catch (err) {
+      showNotification("Fetch failed: " + err.message);
+    } finally {
+      setFetching(false);
+    }
+  };
+
   const generatePlan = async () => {
-    if (!destination.trim()) return;
+    if (!destination.trim() || !startDate || !endDate) {
+      showNotification("Please fill in destination and dates");
+      return;
+    }
     setLoading(true);
     try {
       const wardrobeText = wardrobe.map(i => `- ${i.name} (${i.category}, ${i.color})`).join("\n");
+
+      const weatherSummary = weatherData
+        ? `LOCATION: ${weatherData.location}\nFORECAST:\n${weatherData.days.map(d => `  ${d.date}: ${d.temp_low}–${d.temp_high}°F, ${d.conditions}${d.rain_mm > 0 ? `, ${d.rain_mm}mm rain` : ""}`).join("\n")}`
+        : `LOCATION: ${destination}\nWEATHER: not fetched`;
+
+      const eventsList = [];
+      if (calendarEvents.length > 0) {
+        for (const ev of calendarEvents) {
+          const start = ev.start?.dateTime || ev.start?.date;
+          const summary = ev.summary || "(no title)";
+          const desc = ev.description ? ` — ${ev.description.slice(0, 100)}` : "";
+          eventsList.push(`  ${start}: ${summary}${desc}`);
+        }
+      }
+      if (manualEvents.trim()) {
+        eventsList.push(`Additional notes: ${manualEvents}`);
+      }
+      const eventsSummary = eventsList.length > 0 ? eventsList.join("\n") : "No specific events scheduled.";
+
+      const days = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1;
+
       const response = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
-          max_tokens: 2000,
+          max_tokens: 2500,
           messages: [{
             role: "user",
-            content: `Build a smart packing plan. Goal: minimize overpacking by finding versatile pieces that work across multiple events.
+            content: `Build a smart packing plan. Goal: minimize overpacking by finding versatile pieces that work across multiple events and weather conditions.
 
 DESTINATION: ${destination}
-LENGTH: ${days} days
-WEATHER: ${weather || "moderate"}
-EVENTS: ${events || "general travel"}
+TRIP DATES: ${startDate} to ${endDate} (${days} days)
 
-WARDROBE:
+${weatherSummary}
+
+EVENTS (from calendar + notes):
+${eventsSummary}
+
+WARDROBE (${wardrobe.length} items):
 ${wardrobeText}
+
+Build a day-by-day plan that:
+- Uses real weather data if provided (cold = layers, rain = waterproof, etc.)
+- Matches outfits to actual events (formal dinner = different from museum walk)
+- Reuses versatile pieces across multiple days
+- Identifies what NOT to pack (saves space)
 
 Respond ONLY with valid JSON, no markdown:
 {
-  "summary": "one-line summary of trip strategy",
-  "days": [{"day": 1, "event": "event description", "outfit": ["item names"], "note": "why this works"}],
+  "summary": "one-line trip strategy that mentions the actual weather and key events",
+  "days": [{"day": 1, "date": "YYYY-MM-DD", "weather": "brief weather note", "event": "event from calendar or generic activity", "outfit": ["item names from wardrobe"], "note": "why this works"}],
   "essentials": ["versatile pieces to pack that work for multiple days"],
   "skip_list": ["items you might think to pack but don't need, with reasons"]
 }`
@@ -976,36 +1166,108 @@ Respond ONLY with valid JSON, no markdown:
     <div className="tab-content">
       <div className="section-header">
         <h2 className="section-title">Pack Smart</h2>
-        <p className="section-sub">Day-by-day outfits, no overpacking</p>
+        <p className="section-sub">Calendar-aware, weather-smart packing</p>
       </div>
+
+      {/* Calendar connection status */}
+      {!calendarChecking && (
+        <div className="calendar-status">
+          {calendarConnected ? (
+            <>
+              <span className="status-dot"></span>
+              <span>Google Calendar connected</span>
+              <button className="change-key-btn" onClick={disconnectCalendar}>Disconnect</button>
+            </>
+          ) : (
+            <>
+              <span style={{ color: "#6b6b6b", fontSize: "0.875rem" }}>Calendar not connected</span>
+              <button className="btn-ghost" style={{ marginLeft: "auto" }} onClick={connectCalendar}>
+                Connect Google Calendar
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="pack-form">
         <label className="auth-label">
           Destination
-          <input className="auth-input" value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Paris, France" />
+          <input
+            className="auth-input"
+            value={destination}
+            onChange={(e) => setDestination(e.target.value)}
+            placeholder="Paris, France"
+          />
         </label>
         <div className="pack-row">
           <label className="auth-label">
-            Days
-            <input className="auth-input" type="number" min={1} max={30} value={days} onChange={(e) => setDays(Number(e.target.value))} />
+            Start date
+            <input
+              className="auth-input"
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+            />
           </label>
-          <label className="auth-label" style={{ flex: 2 }}>
-            Weather
-            <input className="auth-input" value={weather} onChange={(e) => setWeather(e.target.value)} placeholder="50-60°F, light rain" />
+          <label className="auth-label">
+            End date
+            <input
+              className="auth-input"
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+            />
           </label>
         </div>
+
+        <button className="btn-ghost" onClick={fetchTripData} disabled={fetching}>
+          {fetching ? "Fetching trip data..." : "Pull weather + calendar events"}
+        </button>
+
+        {weatherData && (
+          <div className="trip-data-block">
+            <div className="trip-data-label">📍 {weatherData.location}</div>
+            <div className="trip-data-content">
+              {weatherData.days.map((d, i) => (
+                <div key={i} className="weather-day">
+                  <span className="weather-date">{d.date}</span>
+                  <span>{d.temp_low}–{d.temp_high}°F · {d.conditions}{d.rain_mm > 0 ? ` · ${d.rain_mm}mm rain` : ""}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {calendarEvents.length > 0 && (
+          <div className="trip-data-block">
+            <div className="trip-data-label">🗓️ {calendarEvents.length} calendar events found</div>
+            <div className="trip-data-content">
+              {calendarEvents.slice(0, 6).map((ev, i) => {
+                const when = ev.start?.dateTime || ev.start?.date;
+                return (
+                  <div key={i} className="weather-day">
+                    <span className="weather-date">{when?.slice(0, 10)}</span>
+                    <span>{ev.summary || "(no title)"}</span>
+                  </div>
+                );
+              })}
+              {calendarEvents.length > 6 && <div className="weather-day"><span>... and {calendarEvents.length - 6} more</span></div>}
+            </div>
+          </div>
+        )}
+
         <label className="auth-label">
-          Events / itinerary
+          Additional notes (optional)
           <textarea
             className="auth-input"
-            rows={4}
-            value={events}
-            onChange={(e) => setEvents(e.target.value)}
-            placeholder="Mon: museum walking. Tue: business meetings. Wed: fancy dinner. Thu: travel home."
+            rows={3}
+            value={manualEvents}
+            onChange={(e) => setManualEvents(e.target.value)}
+            placeholder="Beach day Tuesday. Black tie gala Thursday."
           />
         </label>
         <button className="btn-primary btn-large" onClick={generatePlan} disabled={loading}>
-          {loading ? "Planning..." : <><Icon.Suitcase /> Build my packing plan</>}
+          {loading ? "Building plan..." : <><Icon.Suitcase /> Build my packing plan</>}
         </button>
       </div>
 
@@ -1018,6 +1280,7 @@ Respond ONLY with valid JSON, no markdown:
             <div key={i} className="plan-day">
               <div className="plan-day-num">Day {d.day}</div>
               <div className="plan-day-body">
+                {d.date && <div className="plan-date">{d.date}{d.weather ? ` · ${d.weather}` : ""}</div>}
                 <div className="plan-event">{d.event}</div>
                 <div className="plan-outfit">{d.outfit.join(" · ")}</div>
                 <div className="plan-note">{d.note}</div>
@@ -1613,6 +1876,32 @@ body {
   font-size: 0.9375rem;
 }
 .plan-skip li { color: var(--ink-muted); border-style: dashed; }
+.plan-date { font-size: 0.75rem; color: var(--ink-muted); margin-bottom: 0.375rem; letter-spacing: 0.05em; }
+
+/* Calendar / Weather UI */
+.calendar-status {
+  display: flex; align-items: center; gap: 0.625rem;
+  padding: 0.875rem 1.25rem; background: white;
+  border: 1px solid var(--line); border-radius: 12px;
+  margin-bottom: 1.5rem; font-size: 0.875rem;
+}
+.trip-data-block {
+  background: var(--cream); border: 1px solid var(--line);
+  border-radius: 10px; padding: 0.875rem 1rem; margin-top: 0.75rem;
+}
+.trip-data-label {
+  font-size: 0.75rem; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+  margin-bottom: 0.625rem;
+}
+.trip-data-content { display: flex; flex-direction: column; gap: 0.375rem; }
+.weather-day {
+  display: flex; gap: 1rem; font-size: 0.8125rem; color: var(--ink-soft);
+  padding: 0.25rem 0;
+}
+.weather-date {
+  min-width: 90px; font-weight: 500; color: var(--ink);
+}
 
 .empty-state { text-align: center; padding: 4rem 2rem; color: var(--ink-muted); }
 
