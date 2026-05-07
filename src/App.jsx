@@ -48,6 +48,19 @@ const CATEGORY_EMOJI = {
   "Accessories": "👜", "Suits": "🤵", "Dresses": "👗", "Other": "✨"
 };
 
+const ACTIVITY_OPTIONS = [
+  { id: "business", emoji: "💼", label: "Business meetings" },
+  { id: "smart_casual", emoji: "👔", label: "Smart casual" },
+  { id: "beach", emoji: "🏖️", label: "Beach / pool" },
+  { id: "outdoors", emoji: "🥾", label: "Hiking / outdoors" },
+  { id: "fine_dining", emoji: "🍷", label: "Fine dining" },
+  { id: "sightseeing", emoji: "🏛️", label: "Sightseeing / walking" },
+  { id: "fitness", emoji: "💪", label: "Gym / fitness" },
+  { id: "black_tie", emoji: "🎩", label: "Black tie / formal" },
+  { id: "casual", emoji: "🎨", label: "Casual exploring" },
+  { id: "travel", emoji: "✈️", label: "Travel days" },
+];
+
 // ─── AUTH SCREEN ────────────────────────────────────────────────────────────
 function AuthScreen({ onAuthSuccess }) {
   const [mode, setMode] = useState("login"); // login | signup | reset
@@ -239,6 +252,8 @@ function App() {
   const [wardrobe, setWardrobe] = useState([]);
   const [wardrobeLoading, setWardrobeLoading] = useState(false);
   const [notification, setNotification] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [showStyleModal, setShowStyleModal] = useState(false);
 
   const showNotification = (msg) => {
     setNotification(msg);
@@ -300,9 +315,45 @@ function App() {
 
   // Load wardrobe when session changes
   useEffect(() => {
-    if (!session) { setWardrobe([]); return; }
+    if (!session) { setWardrobe([]); setProfile(null); return; }
     loadWardrobe();
+    loadProfile();
   }, [session?.user?.id]);
+
+  const loadProfile = async () => {
+    try {
+      const { data } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", session.user.id)
+        .maybeSingle();
+      setProfile(data);
+      // Show modal if style preference not yet set
+      if (data && !data.style_preference) {
+        setShowStyleModal(true);
+      }
+    } catch (err) {
+      // Non-fatal
+      console.error("Profile load error:", err);
+    }
+  };
+
+  const saveStylePreference = async (pref) => {
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .update({ style_preference: pref })
+        .eq("id", session.user.id)
+        .select()
+        .single();
+      if (error) throw error;
+      setProfile(data);
+      setShowStyleModal(false);
+      showNotification("Preference saved");
+    } catch (err) {
+      showNotification("Failed to save: " + err.message);
+    }
+  };
 
   const loadWardrobe = async () => {
     setWardrobeLoading(true);
@@ -388,6 +439,16 @@ function App() {
           <h1 className="brand-name">VESTIS</h1>
         </div>
         <div className="header-actions">
+          <button
+            className="pref-btn"
+            onClick={() => setShowStyleModal(true)}
+            title="Change style preference"
+          >
+            {profile?.style_preference === "mens" && "👨 Men's"}
+            {profile?.style_preference === "womens" && "👩 Women's"}
+            {profile?.style_preference === "both" && "🧑 Both"}
+            {!profile?.style_preference && "Set style"}
+          </button>
           <span className="user-email">{session.user.email}</span>
           <button className="signout-btn" onClick={handleSignOut} title="Sign out">
             <Icon.LogOut />
@@ -423,10 +484,67 @@ function App() {
             showNotification={showNotification}
           />
         )}
-        {tab === "style" && <StyleTab wardrobe={wardrobe} showNotification={showNotification} />}
+        {tab === "style" && <StyleTab wardrobe={wardrobe} profile={profile} showNotification={showNotification} />}
         {tab === "tryon" && <TryOnTab wardrobe={wardrobe} session={session} showNotification={showNotification} />}
-        {tab === "pack" && <PackTab wardrobe={wardrobe} session={session} showNotification={showNotification} />}
+        {tab === "pack" && <PackTab wardrobe={wardrobe} session={session} profile={profile} showNotification={showNotification} />}
       </main>
+
+      {showStyleModal && (
+        <StylePreferenceModal
+          onSave={saveStylePreference}
+          onClose={() => setShowStyleModal(false)}
+          allowClose={!!profile?.style_preference}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── STYLE PREFERENCE MODAL ─────────────────────────────────────────────────
+function StylePreferenceModal({ onSave, onClose, allowClose }) {
+  const [selected, setSelected] = useState(null);
+
+  const options = [
+    { id: "mens", emoji: "👨", label: "Men's clothing", desc: "Suits, shirts, ties, oxfords" },
+    { id: "womens", emoji: "👩", label: "Women's clothing", desc: "Dresses, skirts, blouses, heels" },
+    { id: "both", emoji: "🧑", label: "Both / Non-binary", desc: "Mix and match across styles" },
+  ];
+
+  return (
+    <div className="modal-overlay" onClick={allowClose ? onClose : undefined}>
+      <div className="detail-modal style-pref-modal" onClick={(e) => e.stopPropagation()}>
+        {allowClose && <button className="modal-close" onClick={onClose}><Icon.X /></button>}
+        <h3 className="detail-name" style={{ marginTop: 0 }}>Welcome to VESTIS</h3>
+        <p style={{ color: "var(--ink-muted)", fontSize: "0.9375rem", marginBottom: "1.5rem" }}>
+          To give you better styling recommendations, which clothing categories should I focus on for you?
+        </p>
+        <div className="style-pref-options">
+          {options.map(opt => (
+            <button
+              key={opt.id}
+              className={`style-pref-card ${selected === opt.id ? "style-pref-selected" : ""}`}
+              onClick={() => setSelected(opt.id)}
+            >
+              <span className="style-pref-emoji">{opt.emoji}</span>
+              <div>
+                <div className="style-pref-label">{opt.label}</div>
+                <div className="style-pref-desc">{opt.desc}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+        <button
+          className="btn-primary btn-large btn-full"
+          style={{ marginTop: "1.5rem" }}
+          onClick={() => selected && onSave(selected)}
+          disabled={!selected}
+        >
+          Continue
+        </button>
+        <p style={{ fontSize: "0.75rem", color: "var(--ink-muted)", textAlign: "center", marginTop: "0.875rem" }}>
+          You can change this anytime from your profile.
+        </p>
+      </div>
     </div>
   );
 }
@@ -600,7 +718,7 @@ function ItemDetail({ item, onClose, onRemove }) {
 }
 
 // ─── STYLE TAB ──────────────────────────────────────────────────────────────
-function StyleTab({ wardrobe, showNotification }) {
+function StyleTab({ wardrobe, profile, showNotification }) {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [outfit, setOutfit] = useState(null);
@@ -617,6 +735,11 @@ function StyleTab({ wardrobe, showNotification }) {
       const wardrobeText = wardrobe.map(i => `- ${i.name} (${i.category}, ${i.color}, ${i.style})`).join("\n");
       const anchorText = selected.length > 0 ? `\n\nMust include these pieces: ${selected.map(id => wardrobe.find(i => i.id === id)?.name).filter(Boolean).join(", ")}` : "";
       const userPrompt = prompt || "an outfit for today";
+      const styleNote = profile?.style_preference === "mens"
+        ? "\n\nThe person prefers men's clothing categories (suits, shirts, ties, oxfords, etc.)."
+        : profile?.style_preference === "womens"
+        ? "\n\nThe person prefers women's clothing categories (dresses, skirts, blouses, heels, etc.)."
+        : "";
 
       const response = await fetch("/api/claude", {
         method: "POST",
@@ -626,7 +749,7 @@ function StyleTab({ wardrobe, showNotification }) {
           max_tokens: 1500,
           messages: [{
             role: "user",
-            content: `You are a personal stylist. Build an outfit from this wardrobe for: ${userPrompt}${anchorText}
+            content: `You are a personal stylist. Build an outfit from this wardrobe for: ${userPrompt}${anchorText}${styleNote}
 
 WARDROBE:
 ${wardrobeText}
@@ -956,11 +1079,12 @@ function TryOnTab({ wardrobe, session, showNotification }) {
 }
 
 // ─── PACK TAB ───────────────────────────────────────────────────────────────
-function PackTab({ wardrobe, session, showNotification }) {
+function PackTab({ wardrobe, session, profile, showNotification }) {
   const [destination, setDestination] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [manualEvents, setManualEvents] = useState("");
+  const [activities, setActivities] = useState([]);
   const [loading, setLoading] = useState(false);
   const [plan, setPlan] = useState(null);
 
@@ -1104,12 +1228,25 @@ function PackTab({ wardrobe, session, showNotification }) {
           eventsList.push(`  ${start}: ${summary}${desc}`);
         }
       }
+      if (activities.length > 0) {
+        const activityLabels = activities
+          .map(id => ACTIVITY_OPTIONS.find(a => a.id === id)?.label)
+          .filter(Boolean)
+          .join(", ");
+        eventsList.push(`Planned activities: ${activityLabels}`);
+      }
       if (manualEvents.trim()) {
         eventsList.push(`Additional notes: ${manualEvents}`);
       }
       const eventsSummary = eventsList.length > 0 ? eventsList.join("\n") : "No specific events scheduled.";
 
       const days = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1;
+
+      const styleNote = profile?.style_preference === "mens"
+        ? "STYLE PREFERENCE: Men's clothing categories (suits, shirts, ties, oxfords, etc.)"
+        : profile?.style_preference === "womens"
+        ? "STYLE PREFERENCE: Women's clothing categories (dresses, skirts, blouses, heels, etc.)"
+        : "STYLE PREFERENCE: Mix and match across categories";
 
       const response = await fetch("/api/claude", {
         method: "POST",
@@ -1123,10 +1260,11 @@ function PackTab({ wardrobe, session, showNotification }) {
 
 DESTINATION: ${destination}
 TRIP DATES: ${startDate} to ${endDate} (${days} days)
+${styleNote}
 
 ${weatherSummary}
 
-EVENTS (from calendar + notes):
+EVENTS / ACTIVITIES:
 ${eventsSummary}
 
 WARDROBE (${wardrobe.length} items):
@@ -1134,14 +1272,14 @@ ${wardrobeText}
 
 Build a day-by-day plan that:
 - Uses real weather data if provided (cold = layers, rain = waterproof, etc.)
-- Matches outfits to actual events (formal dinner = different from museum walk)
+- Matches outfits to actual events and planned activities
 - Reuses versatile pieces across multiple days
 - Identifies what NOT to pack (saves space)
 
 Respond ONLY with valid JSON, no markdown:
 {
-  "summary": "one-line trip strategy that mentions the actual weather and key events",
-  "days": [{"day": 1, "date": "YYYY-MM-DD", "weather": "brief weather note", "event": "event from calendar or generic activity", "outfit": ["item names from wardrobe"], "note": "why this works"}],
+  "summary": "one-line trip strategy that mentions the actual weather and key activities",
+  "days": [{"day": 1, "date": "YYYY-MM-DD", "weather": "brief weather note", "event": "activity for the day", "outfit": ["item names from wardrobe"], "note": "why this works"}],
   "essentials": ["versatile pieces to pack that work for multiple days"],
   "skip_list": ["items you might think to pack but don't need, with reasons"]
 }`
@@ -1255,6 +1393,29 @@ Respond ONLY with valid JSON, no markdown:
             </div>
           </div>
         )}
+
+        <div className="activity-selector">
+          <label className="field-label-strong">What will you be doing? <span style={{ fontWeight: 400, color: "var(--ink-muted)" }}>(tap all that apply)</span></label>
+          <div className="activity-grid">
+            {ACTIVITY_OPTIONS.map(act => (
+              <button
+                key={act.id}
+                type="button"
+                className={`activity-chip ${activities.includes(act.id) ? "activity-selected" : ""}`}
+                onClick={() => {
+                  setActivities(prev =>
+                    prev.includes(act.id)
+                      ? prev.filter(a => a !== act.id)
+                      : [...prev, act.id]
+                  );
+                }}
+              >
+                <span className="activity-emoji">{act.emoji}</span>
+                <span className="activity-label">{act.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
 
         <label className="auth-label">
           Additional notes (optional)
@@ -1903,6 +2064,63 @@ body {
   min-width: 90px; font-weight: 500; color: var(--ink);
 }
 
+/* Activity selector */
+.activity-selector { margin: 0.5rem 0; }
+.field-label-strong {
+  display: block; font-size: 0.875rem; font-weight: 600;
+  color: var(--ink); margin-bottom: 0.75rem;
+}
+.activity-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.5rem;
+}
+.activity-chip {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.625rem 0.875rem; background: white;
+  border: 1.5px solid var(--line-strong); border-radius: 100px;
+  font-family: inherit; font-size: 0.8125rem; font-weight: 500;
+  color: var(--ink); cursor: pointer; transition: all 0.15s;
+  text-align: left;
+}
+.activity-chip:hover { border-color: var(--ink); transform: translateY(-1px); }
+.activity-selected {
+  background: var(--ink); color: var(--cream); border-color: var(--ink);
+}
+.activity-emoji { font-size: 1.125rem; }
+.activity-label { flex: 1; }
+
+/* Style preference button in header */
+.pref-btn {
+  display: inline-flex; align-items: center; gap: 0.375rem;
+  padding: 0.4rem 0.75rem; background: white;
+  border: 1px solid var(--line-strong); border-radius: 100px;
+  font-family: inherit; font-size: 0.8125rem; font-weight: 500;
+  color: var(--ink); cursor: pointer; transition: all 0.2s;
+}
+.pref-btn:hover { background: var(--cream-dark); border-color: var(--ink); }
+
+/* Style preference modal */
+.style-pref-modal { max-width: 460px; }
+.style-pref-options {
+  display: flex; flex-direction: column; gap: 0.75rem;
+}
+.style-pref-card {
+  display: flex; align-items: center; gap: 1rem;
+  padding: 1rem 1.25rem; background: white;
+  border: 2px solid var(--line); border-radius: 14px;
+  font-family: inherit; cursor: pointer; transition: all 0.2s;
+  text-align: left;
+}
+.style-pref-card:hover { border-color: var(--accent-light); transform: translateY(-1px); }
+.style-pref-selected {
+  border-color: var(--ink); background: var(--cream);
+}
+.style-pref-emoji { font-size: 2rem; }
+.style-pref-label {
+  font-weight: 600; font-size: 1rem; margin-bottom: 0.125rem; color: var(--ink);
+}
+.style-pref-desc { font-size: 0.8125rem; color: var(--ink-muted); }
+
 .empty-state { text-align: center; padding: 4rem 2rem; color: var(--ink-muted); }
 
 @media (max-width: 640px) {
@@ -1910,6 +2128,8 @@ body {
   .pack-row { flex-direction: column; }
   .before-after { grid-template-columns: 1fr; }
   .section-title { font-size: 2rem; }
+  .activity-grid { grid-template-columns: 1fr 1fr; }
+  .pref-btn span { display: none; }
 }
 `;
 
