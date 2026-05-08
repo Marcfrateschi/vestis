@@ -588,7 +588,36 @@ function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, onUpdate, sh
   const fileInputRef = useRef();
 
   const categories = ["All", ...new Set(wardrobe.map(i => i.category))];
-  const filtered = filter === "All" ? wardrobe : wardrobe.filter(i => i.category === filter);
+  const wearFilters = ["🔥 Recently worn", "💤 Dormant 30+", "💤 Dormant 60+", "💤 Dormant 90+", "✨ Never worn"];
+
+  let filtered;
+  if (filter === "All") {
+    filtered = wardrobe;
+  } else if (filter === "🔥 Recently worn") {
+    filtered = wardrobe.filter(i => {
+      const d = daysSince(i.last_worn_date);
+      return d !== null && d <= 7;
+    });
+  } else if (filter === "💤 Dormant 30+") {
+    filtered = wardrobe.filter(i => {
+      const d = daysSince(i.last_worn_date);
+      return d !== null && d >= 30;
+    });
+  } else if (filter === "💤 Dormant 60+") {
+    filtered = wardrobe.filter(i => {
+      const d = daysSince(i.last_worn_date);
+      return d !== null && d >= 60;
+    });
+  } else if (filter === "💤 Dormant 90+") {
+    filtered = wardrobe.filter(i => {
+      const d = daysSince(i.last_worn_date);
+      return d !== null && d >= 90;
+    });
+  } else if (filter === "✨ Never worn") {
+    filtered = wardrobe.filter(i => !i.last_worn_date);
+  } else {
+    filtered = wardrobe.filter(i => i.category === filter);
+  }
 
   const analyzePhoto = async (dataUrl) => {
     setAnalyzing(true);
@@ -672,7 +701,16 @@ Respond ONLY with valid JSON, no markdown, no preamble:
       <div className="section-header">
         <div>
           <h2 className="section-title">Your Wardrobe</h2>
-          <p className="section-sub">{wardrobe.length} pieces · synced to cloud</p>
+          <p className="section-sub">
+            {wardrobe.length} pieces · synced to cloud
+            {(() => {
+              const dormant = wardrobe.filter(i => {
+                const d = daysSince(i.last_worn_date);
+                return d !== null && d >= 60;
+              }).length;
+              return dormant > 0 ? <span> · <strong>{dormant} dormant 60+</strong></span> : null;
+            })()}
+          </p>
         </div>
       </div>
 
@@ -690,6 +728,14 @@ Respond ONLY with valid JSON, no markdown, no preamble:
       <div className="filter-row">
         {categories.map(c => (
           <button key={c} className={`filter-chip ${filter === c ? "filter-active" : ""}`} onClick={() => setFilter(c)}>
+            {c}
+          </button>
+        ))}
+      </div>
+
+      <div className="filter-row filter-row-wear">
+        {wearFilters.map(c => (
+          <button key={c} className={`filter-chip filter-chip-wear ${filter === c ? "filter-active" : ""}`} onClick={() => setFilter(c)}>
             {c}
           </button>
         ))}
@@ -713,7 +759,12 @@ Respond ONLY with valid JSON, no markdown, no preamble:
               </div>
               <div className="item-info">
                 <div className="item-name">{item.name}</div>
-                <div className="item-meta">{item.category} · {item.color}</div>
+                <div className="item-meta">
+                  {item.category} · {item.color}
+                  {item.last_worn_date && daysSince(item.last_worn_date) >= 30 && (
+                    <span className={`dormancy-dot ${getDormancyClass(item.last_worn_date)}`} title={`Last worn ${formatLastWorn(item.last_worn_date)}`}></span>
+                  )}
+                </div>
               </div>
               {item.is_starter && !item.image_url && <div className="starter-badge">Add your photo</div>}
             </button>
@@ -789,6 +840,33 @@ function ItemDetail({ item, onClose, onRemove, onUpdate }) {
             <div className="detail-meta">
               <span>{item.category}</span> · <span>{item.color}</span> · <span>{item.style}</span>
             </div>
+
+            <div className="wear-block">
+              <div className="wear-stats">
+                <div className="wear-stat">
+                  <span className="wear-stat-label">Last worn</span>
+                  <span className={`wear-stat-value ${getDormancyClass(item.last_worn_date)}`}>
+                    {formatLastWorn(item.last_worn_date)}
+                  </span>
+                </div>
+                <div className="wear-stat">
+                  <span className="wear-stat-label">Times worn</span>
+                  <span className="wear-stat-value">{item.wear_count || 0}</span>
+                </div>
+              </div>
+              <button
+                className="wore-today-btn"
+                onClick={async () => {
+                  await onUpdate({
+                    last_worn_date: new Date().toISOString(),
+                    wear_count: (item.wear_count || 0) + 1,
+                  });
+                }}
+              >
+                ✓ I wore this today
+              </button>
+            </div>
+
             <div className="detail-grid">
               <div><label>Season</label><p>{item.season}</p></div>
               <div><label>Details</label><p>{item.details}</p></div>
@@ -1951,6 +2029,36 @@ function TripPlanView({ trip, onEdit, onBack }) {
 }
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
+function daysSince(isoDate) {
+  if (!isoDate) return null;
+  const then = new Date(isoDate);
+  const now = new Date();
+  return Math.floor((now - then) / (1000 * 60 * 60 * 24));
+}
+
+function formatLastWorn(isoDate) {
+  if (!isoDate) return "Never worn";
+  const days = daysSince(isoDate);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 7) return `${days} days ago`;
+  if (days < 14) return "1 week ago";
+  if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
+  if (days < 60) return "1 month ago";
+  if (days < 365) return `${Math.floor(days / 30)} months ago`;
+  return `${Math.floor(days / 365)}+ years ago`;
+}
+
+function getDormancyClass(isoDate) {
+  if (!isoDate) return "wear-never";
+  const days = daysSince(isoDate);
+  if (days < 7) return "wear-recent";
+  if (days < 30) return "wear-active";
+  if (days < 60) return "wear-dormant-30";
+  if (days < 90) return "wear-dormant-60";
+  return "wear-dormant-90";
+}
+
 function colorToCSS(color) {
   if (!color) return "#d4cfc4";
   const map = {
@@ -2263,6 +2371,56 @@ body {
 .detail-visual img { width: 100%; height: 100%; object-fit: cover; }
 .detail-emoji { font-size: 5rem; opacity: 0.7; }
 .detail-name { font-family: 'Cormorant Garamond', serif; font-size: 1.75rem; margin-bottom: 0.5rem; }
+
+/* Wear tracking */
+.wear-block {
+  background: var(--cream); border-radius: 12px;
+  padding: 1rem 1.25rem; margin: 1rem 0 1.25rem;
+}
+.wear-stats {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+  margin-bottom: 0.875rem;
+}
+.wear-stat { display: flex; flex-direction: column; gap: 0.25rem; }
+.wear-stat-label {
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.wear-stat-value {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.375rem; font-weight: 500; color: var(--ink);
+}
+.wear-recent { color: var(--success); }
+.wear-active { color: var(--ink); }
+.wear-dormant-30 { color: #c19a6b; }
+.wear-dormant-60 { color: #b8956a; }
+.wear-dormant-90 { color: var(--error); }
+.wear-never { color: var(--ink-muted); font-style: italic; }
+.wore-today-btn {
+  display: block; width: 100%;
+  padding: 0.75rem 1.25rem;
+  background: white; border: 1.5px solid var(--ink);
+  border-radius: 10px; cursor: pointer;
+  font-family: inherit; font-size: 0.875rem; font-weight: 600;
+  color: var(--ink); transition: all 0.2s;
+}
+.wore-today-btn:hover { background: var(--ink); color: var(--cream); }
+
+.dormancy-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-left: 0.5rem; vertical-align: middle;
+  background: var(--ink-muted);
+}
+.dormancy-dot.wear-dormant-30 { background: #c19a6b; }
+.dormancy-dot.wear-dormant-60 { background: #b8956a; }
+.dormancy-dot.wear-dormant-90 { background: var(--error); animation: pulse 2s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.filter-row-wear { margin-top: -0.75rem; opacity: 0.85; }
+.filter-chip-wear {
+  font-size: 0.75rem;
+  background: var(--cream-dark);
+}
 .detail-header-row {
   display: flex; align-items: center; justify-content: space-between;
   gap: 1rem; flex-wrap: wrap;
