@@ -183,10 +183,22 @@ function CameraModal({ onCapture, onClose, facing = "environment" }) {
     (async () => {
       try {
         const s = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } }
+          video: {
+            facingMode: facing,
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            // request widest FOV available to avoid zoomed-in framing
+            advanced: [{ zoom: 1.0 }]
+          }
         });
         if (cancelled) { s.getTracks().forEach(t => t.stop()); return; }
         streamRef.current = s;
+        // Try to set zoom to 1.0 explicitly if supported
+        const track = s.getVideoTracks()[0];
+        const capabilities = track?.getCapabilities?.();
+        if (capabilities?.zoom) {
+          try { await track.applyConstraints({ advanced: [{ zoom: capabilities.zoom.min || 1.0 }] }); } catch {}
+        }
         setHasStream(true);
         if (videoRef.current) videoRef.current.srcObject = s;
       } catch {
@@ -421,6 +433,24 @@ function App() {
     }
   };
 
+  const updateItem = async (id, updates) => {
+    try {
+      const { data, error } = await supabase
+        .from("wardrobe_items")
+        .update(updates)
+        .eq("id", id)
+        .select()
+        .single();
+      if (error) throw error;
+      setWardrobe(prev => prev.map(i => i.id === id ? data : i));
+      showNotification("Item updated");
+      return data;
+    } catch (err) {
+      showNotification("Failed to update: " + err.message);
+      return null;
+    }
+  };
+
   if (authChecking) {
     return <div className="loading-screen"><div className="loading-pulse">VESTIS</div></div>;
   }
@@ -481,6 +511,7 @@ function App() {
             session={session}
             onAdd={addItem}
             onRemove={removeItem}
+            onUpdate={updateItem}
             showNotification={showNotification}
           />
         )}
@@ -550,7 +581,7 @@ function StylePreferenceModal({ onSave, onClose, allowClose }) {
 }
 
 // ─── WARDROBE TAB ───────────────────────────────────────────────────────────
-function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, showNotification }) {
+function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, onUpdate, showNotification }) {
   const [filter, setFilter] = useState("All");
   const [analyzing, setAnalyzing] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
@@ -588,11 +619,21 @@ function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, showNotifica
             role: "user",
             content: [
               { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
-              { type: "text", text: `Analyze this clothing item. Respond ONLY with valid JSON, no markdown, no preamble:
+              { type: "text", text: `You are an expert clothing analyst. Analyze this garment carefully.
+
+CRITICAL — COLOR ACCURACY:
+- Photo lighting often makes colors appear darker/duller than they really are. Look closely for color tints in shadows/highlights.
+- If you see ANY blue tint, it's likely Navy or Indigo (NOT black). Black is truly black with no color cast.
+- If you see ANY blue/green tint in a "gray" item, it's likely Light Blue, Sky Blue, or Slate (NOT gray).
+- Common denim colors: Indigo, Dark Wash, Medium Wash, Light Wash, Black Denim — use these specifically, not just "blue".
+- Be specific: "Navy" not "dark blue", "Burgundy" not "dark red", "Charcoal" not "dark gray".
+
+Respond ONLY with valid JSON, no markdown, no preamble:
 {
   "name": "concise descriptive name",
   "category": "one of: Tops, Bottoms, Outerwear, Shoes, Accessories, Suits, Dresses, Other",
-  "color": "primary color",
+  "color": "specific primary color (be precise — see color rules above)",
+  "color_alternatives": ["2-3 plausible alternative colors in case primary is wrong, e.g. 'Navy', 'Indigo', 'Black'"],
   "style": "one of: Casual, Smart Casual, Formal, Refined, Classic, Athletic",
   "season": "one of: Spring/Summer, Fall/Winter, All Seasons",
   "details": "brief description of fabric, fit, notable features",
@@ -689,12 +730,57 @@ function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, showNotifica
       )}
 
       {showCamera && <CameraModal onCapture={analyzePhoto} onClose={() => setShowCamera(false)} />}
-      {detail && <ItemDetail item={detail} onClose={() => setDetail(null)} onRemove={() => { onRemove(detail.id); setDetail(null); }} />}
+      {detail && (
+        <ItemDetail
+          item={detail}
+          onClose={() => setDetail(null)}
+          onRemove={() => { onRemove(detail.id); setDetail(null); }}
+          onUpdate={async (updates) => {
+            const updated = await onUpdate(detail.id, updates);
+            if (updated) setDetail(updated);
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function ItemDetail({ item, onClose, onRemove }) {
+function ItemDetail({ item, onClose, onRemove, onUpdate }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(item.name || "");
+  const [category, setCategory] = useState(item.category || "Other");
+  const [color, setColor] = useState(item.color || "");
+  const [style, setStyle] = useState(item.style || "Casual");
+  const [season, setSeason] = useState(item.season || "All Seasons");
+  const [details, setDetails] = useState(item.details || "");
+  const [pairsWith, setPairsWith] = useState(item.pairs_with || "");
+  const [saving, setSaving] = useState(false);
+
+  // Suggested color alternatives the AI returned (if any)
+  const colorAlternatives = item.color_alternatives || [];
+
+  const handleSave = async () => {
+    setSaving(true);
+    await onUpdate({ name, category, color, style, season, details, pairs_with: pairsWith });
+    setSaving(false);
+    setEditing(false);
+  };
+
+  const handleCancel = () => {
+    setName(item.name || "");
+    setCategory(item.category || "Other");
+    setColor(item.color || "");
+    setStyle(item.style || "Casual");
+    setSeason(item.season || "All Seasons");
+    setDetails(item.details || "");
+    setPairsWith(item.pairs_with || "");
+    setEditing(false);
+  };
+
+  const CATEGORIES = ["Tops", "Bottoms", "Outerwear", "Shoes", "Accessories", "Suits", "Dresses", "Other"];
+  const STYLES = ["Casual", "Smart Casual", "Formal", "Refined", "Classic", "Athletic"];
+  const SEASONS = ["Spring/Summer", "Fall/Winter", "All Seasons"];
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="detail-modal" onClick={(e) => e.stopPropagation()}>
@@ -702,16 +788,80 @@ function ItemDetail({ item, onClose, onRemove }) {
         <div className="detail-visual">
           {item.image_url ? <img src={item.image_url} alt={item.name} /> : <div className="detail-emoji">{CATEGORY_EMOJI[item.category] || "✨"}</div>}
         </div>
-        <h3 className="detail-name">{item.name}</h3>
-        <div className="detail-meta">
-          <span>{item.category}</span> · <span>{item.color}</span> · <span>{item.style}</span>
-        </div>
-        <div className="detail-grid">
-          <div><label>Season</label><p>{item.season}</p></div>
-          <div><label>Details</label><p>{item.details}</p></div>
-          <div><label>Pairs with</label><p>{item.pairs_with}</p></div>
-        </div>
-        <button className="btn-danger" onClick={onRemove}><Icon.Trash /> Remove from wardrobe</button>
+
+        {!editing ? (
+          <>
+            <div className="detail-header-row">
+              <h3 className="detail-name">{item.name}</h3>
+              <button className="edit-btn" onClick={() => setEditing(true)}>Edit</button>
+            </div>
+            <div className="detail-meta">
+              <span>{item.category}</span> · <span>{item.color}</span> · <span>{item.style}</span>
+            </div>
+            <div className="detail-grid">
+              <div><label>Season</label><p>{item.season}</p></div>
+              <div><label>Details</label><p>{item.details}</p></div>
+              <div><label>Pairs with</label><p>{item.pairs_with}</p></div>
+            </div>
+            <button className="btn-danger" onClick={onRemove}><Icon.Trash /> Remove from wardrobe</button>
+          </>
+        ) : (
+          <>
+            <h3 className="detail-name" style={{ marginBottom: "1rem" }}>Edit item</h3>
+            <div className="edit-form">
+              <label className="auth-label">
+                Name
+                <input className="auth-input" value={name} onChange={(e) => setName(e.target.value)} />
+              </label>
+              <label className="auth-label">
+                Category
+                <select className="auth-input" value={category} onChange={(e) => setCategory(e.target.value)}>
+                  {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </label>
+              <label className="auth-label">
+                Color
+                <input className="auth-input" value={color} onChange={(e) => setColor(e.target.value)} placeholder="e.g. Navy, Indigo, Burgundy" />
+                {colorAlternatives.length > 0 && (
+                  <div className="color-alts">
+                    <span className="color-alts-label">AI suggestions:</span>
+                    {colorAlternatives.filter(c => c !== color).map(alt => (
+                      <button key={alt} type="button" className="color-alt-chip" onClick={() => setColor(alt)}>
+                        {alt}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </label>
+              <label className="auth-label">
+                Style
+                <select className="auth-input" value={style} onChange={(e) => setStyle(e.target.value)}>
+                  {STYLES.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </label>
+              <label className="auth-label">
+                Season
+                <select className="auth-input" value={season} onChange={(e) => setSeason(e.target.value)}>
+                  {SEASONS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </label>
+              <label className="auth-label">
+                Details
+                <textarea className="auth-input" rows={2} value={details} onChange={(e) => setDetails(e.target.value)} />
+              </label>
+              <label className="auth-label">
+                Pairs with
+                <textarea className="auth-input" rows={2} value={pairsWith} onChange={(e) => setPairsWith(e.target.value)} />
+              </label>
+            </div>
+            <div style={{ display: "flex", gap: "0.625rem", marginTop: "1rem" }}>
+              <button className="btn-ghost" onClick={handleCancel} disabled={saving} style={{ flex: 1 }}>Cancel</button>
+              <button className="btn-primary" onClick={handleSave} disabled={saving} style={{ flex: 1 }}>
+                {saving ? "Saving..." : "Save changes"}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -2112,6 +2262,34 @@ body {
 .detail-visual img { width: 100%; height: 100%; object-fit: cover; }
 .detail-emoji { font-size: 5rem; opacity: 0.7; }
 .detail-name { font-family: 'Cormorant Garamond', serif; font-size: 1.75rem; margin-bottom: 0.5rem; }
+.detail-header-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+}
+.edit-btn {
+  background: transparent; border: 1px solid var(--line-strong);
+  color: var(--ink-soft); padding: 0.4rem 0.875rem;
+  border-radius: 8px; font-family: inherit; font-size: 0.8125rem;
+  font-weight: 500; cursor: pointer; transition: all 0.2s;
+}
+.edit-btn:hover { background: var(--ink); color: var(--cream); border-color: var(--ink); }
+.edit-form { display: flex; flex-direction: column; gap: 0.875rem; }
+.edit-form select.auth-input { cursor: pointer; }
+.color-alts {
+  display: flex; flex-wrap: wrap; gap: 0.375rem; align-items: center;
+  margin-top: 0.5rem;
+}
+.color-alts-label {
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.color-alt-chip {
+  background: var(--cream); border: 1px solid var(--line-strong);
+  border-radius: 100px; padding: 0.25rem 0.625rem;
+  font-family: inherit; font-size: 0.75rem; cursor: pointer;
+  transition: all 0.15s;
+}
+.color-alt-chip:hover { background: var(--ink); color: var(--cream); border-color: var(--ink); }
 .detail-meta { font-size: 0.875rem; color: var(--ink-muted); margin-bottom: 1.5rem; }
 .detail-grid { display: grid; gap: 1rem; margin-bottom: 1.5rem; }
 .detail-grid label {
@@ -2127,10 +2305,11 @@ body {
   padding: 1rem 1.25rem; border-bottom: 1px solid var(--line);
 }
 .camera-stage {
-  background: black; aspect-ratio: 4/3; position: relative;
+  background: black; aspect-ratio: 3/4; position: relative;
   display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
 }
-.camera-video, .camera-preview { width: 100%; height: 100%; object-fit: cover; }
+.camera-video, .camera-preview { width: 100%; height: 100%; object-fit: contain; }
 .camera-error { color: white; padding: 2rem; text-align: center; }
 .camera-controls {
   display: flex; align-items: center; justify-content: center; gap: 1rem;
