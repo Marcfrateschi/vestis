@@ -938,10 +938,19 @@ function ItemDetail({ item, onClose, onRemove, onUpdate }) {
 
 // ─── STYLE TAB ──────────────────────────────────────────────────────────────
 function StyleTab({ wardrobe, profile, showNotification }) {
+  const [mode, setMode] = useState("ask"); // "ask" or "look"
+
+  // ASK THE STYLIST state
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [outfit, setOutfit] = useState(null);
   const [selected, setSelected] = useState([]);
+
+  // GET THE LOOK state
+  const [inspirationPhoto, setInspirationPhoto] = useState(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [lookAnalysis, setLookAnalysis] = useState(null);
+  const inspirationFileRef = useRef();
 
   const toggle = (id) => {
     setSelected(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
@@ -997,6 +1006,95 @@ Respond ONLY with valid JSON, no markdown:
     }
   };
 
+  const handleInspirationFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setInspirationPhoto(reader.result);
+      setLookAnalysis(null);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  const analyzeInspiration = async () => {
+    if (!inspirationPhoto) return;
+    setAnalyzing(true);
+    try {
+      const wardrobeText = wardrobe.map(i =>
+        `- ${i.name} (${i.category}, color: ${i.color}, style: ${i.style}${i.details ? `, ${i.details}` : ""})`
+      ).join("\n");
+
+      const styleNote = profile?.style_preference === "mens"
+        ? "The user prefers men's clothing."
+        : profile?.style_preference === "womens"
+        ? "The user prefers women's clothing."
+        : "The user wears a mix of styles.";
+
+      const base64 = inspirationPhoto.split(",")[1];
+
+      const response = await fetch("/api/claude", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 2500,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
+              { type: "text", text: `You're a personal stylist analyzing an inspiration photo to help recreate the outfit from the user's existing wardrobe.
+
+${styleNote}
+
+THE USER'S WARDROBE (${wardrobe.length} items):
+${wardrobeText}
+
+Analyze the outfit in the photo, then match it to the user's wardrobe. For each garment in the inspiration, either find a wardrobe match OR identify it as a shopping gap.
+
+Respond ONLY with valid JSON, no markdown:
+{
+  "look_name": "evocative name for this aesthetic (e.g. 'Coastal Italian summer', 'Minimalist downtown')",
+  "vibe_description": "2-3 sentence description of the overall vibe and what makes it work",
+  "outfit_breakdown": [
+    {
+      "garment_in_photo": "what you see in the photo (e.g. 'cream cable-knit sweater')",
+      "role": "top/bottom/outerwear/shoes/accessory",
+      "wardrobe_match": "exact name from user's wardrobe OR null if no match",
+      "match_quality": "perfect/close/loose/none",
+      "match_reason": "brief reason — if 'close' or 'loose', explain what's similar and what's different",
+      "shopping_suggestion": "if no match, what they'd need to buy to recreate this — be specific (e.g. 'cream cable-knit crewneck sweater, oversized fit')"
+    }
+  ],
+  "recreation_outfit": ["names of wardrobe items that recreate this look as closely as possible"],
+  "shopping_gaps": ["specific items they'd need to buy to fully recreate the look"],
+  "styling_notes": "how to wear/style these pieces for the best vibe match — tucking, layering, accessories"
+}` }
+            ]
+          }]
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.content || !data.content[0]) {
+        const errMsg = data.error || data.detail?.error?.message || JSON.stringify(data).slice(0, 300);
+        throw new Error(errMsg);
+      }
+      const text = data.content[0].text.replace(/```json|```/g, "").trim();
+      setLookAnalysis(JSON.parse(text));
+    } catch (err) {
+      showNotification("Analysis failed: " + err.message);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const resetLook = () => {
+    setInspirationPhoto(null);
+    setLookAnalysis(null);
+  };
+
   return (
     <div className="tab-content">
       <div className="section-header">
@@ -1004,68 +1102,211 @@ Respond ONLY with valid JSON, no markdown:
         <p className="section-sub">Your AI stylist, always on call</p>
       </div>
 
-      <div className="style-input">
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="What's the occasion? e.g. 'first date at a wine bar' or 'casual but put-together for a museum'"
-          rows={3}
-          className="style-textarea"
-        />
-        {selected.length > 0 && (
-          <div className="anchor-pills">
-            <span className="anchor-label">Anchored to:</span>
-            {selected.map(id => {
-              const item = wardrobe.find(i => i.id === id);
-              return item ? <span key={id} className="anchor-pill">{item.name} <button onClick={() => toggle(id)}>×</button></span> : null;
-            })}
-          </div>
-        )}
-        <button className="btn-primary btn-large" onClick={getOutfit} disabled={loading}>
-          {loading ? "Styling..." : <><Icon.Sparkle /> Get my outfit</>}
+      <div className="style-mode-tabs">
+        <button
+          className={`style-mode-btn ${mode === "ask" ? "style-mode-active" : ""}`}
+          onClick={() => setMode("ask")}
+        >
+          💬 Ask the Stylist
+        </button>
+        <button
+          className={`style-mode-btn ${mode === "look" ? "style-mode-active" : ""}`}
+          onClick={() => setMode("look")}
+        >
+          📸 Get the Look
         </button>
       </div>
 
-      {outfit && (
-        <div className="outfit-result">
-          <div className="outfit-header">
-            <h3 className="outfit-title">{outfit.outfit_name}</h3>
-          </div>
-          <div className="outfit-pieces">
-            {outfit.pieces.map((p, i) => (
-              <div key={i} className="outfit-piece">
-                <span className="piece-role">{p.role}</span>
-                <span className="piece-name">{p.name}</span>
+      {mode === "ask" && (
+        <>
+          <div className="style-input">
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="What's the occasion? e.g. 'first date at a wine bar' or 'casual but put-together for a museum'"
+              rows={3}
+              className="style-textarea"
+            />
+            {selected.length > 0 && (
+              <div className="anchor-pills">
+                <span className="anchor-label">Anchored to:</span>
+                {selected.map(id => {
+                  const item = wardrobe.find(i => i.id === id);
+                  return item ? <span key={id} className="anchor-pill">{item.name} <button onClick={() => toggle(id)}>×</button></span> : null;
+                })}
               </div>
-            ))}
+            )}
+            <button className="btn-primary btn-large" onClick={getOutfit} disabled={loading}>
+              {loading ? "Styling..." : <><Icon.Sparkle /> Get my outfit</>}
+            </button>
           </div>
-          <div className="outfit-reasoning">
-            <p>{outfit.reasoning}</p>
+
+          {outfit && (
+            <div className="outfit-result">
+              <div className="outfit-header">
+                <h3 className="outfit-title">{outfit.outfit_name}</h3>
+              </div>
+              <div className="outfit-pieces">
+                {outfit.pieces.map((p, i) => (
+                  <div key={i} className="outfit-piece">
+                    <span className="piece-role">{p.role}</span>
+                    <span className="piece-name">{p.name}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="outfit-reasoning">
+                <p>{outfit.reasoning}</p>
+              </div>
+              <div className="stylist-note">
+                <span className="note-label">Stylist's note</span>
+                <p>{outfit.stylist_note}</p>
+              </div>
+            </div>
+          )}
+
+          <div className="anchor-section">
+            <h3 className="anchor-heading">Or anchor an outfit around specific pieces</h3>
+            <div className="anchor-grid">
+              {wardrobe.map(item => (
+                <button
+                  key={item.id}
+                  className={`anchor-card ${selected.includes(item.id) ? "anchor-selected" : ""}`}
+                  onClick={() => toggle(item.id)}
+                >
+                  <div className="anchor-visual">
+                    {item.image_url ? <img src={item.image_url} alt={item.name} /> : <div className="anchor-emoji">{CATEGORY_EMOJI[item.category] || "✨"}</div>}
+                  </div>
+                  <div className="anchor-name">{item.name}</div>
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="stylist-note">
-            <span className="note-label">Stylist's note</span>
-            <p>{outfit.stylist_note}</p>
-          </div>
-        </div>
+        </>
       )}
 
-      <div className="anchor-section">
-        <h3 className="anchor-heading">Or anchor an outfit around specific pieces</h3>
-        <div className="anchor-grid">
-          {wardrobe.map(item => (
-            <button
-              key={item.id}
-              className={`anchor-card ${selected.includes(item.id) ? "anchor-selected" : ""}`}
-              onClick={() => toggle(item.id)}
-            >
-              <div className="anchor-visual">
-                {item.image_url ? <img src={item.image_url} alt={item.name} /> : <div className="anchor-emoji">{CATEGORY_EMOJI[item.category] || "✨"}</div>}
+      {mode === "look" && (
+        <>
+          <div className="look-input">
+            {!inspirationPhoto ? (
+              <>
+                <div className="look-prompt">
+                  <h3 className="look-title">Upload an inspiration photo</h3>
+                  <p className="look-sub">
+                    Saw an outfit you love on Pinterest, Instagram, or anywhere else? Upload it here and I'll match it to your wardrobe — and tell you what you're missing.
+                  </p>
+                </div>
+                <button
+                  className="upload-card upload-card-primary"
+                  onClick={() => inspirationFileRef.current?.click()}
+                >
+                  <Icon.Camera />
+                  <div>
+                    <div className="upload-title">Add inspiration photo</div>
+                    <div className="upload-sub">Camera, photo library, or screenshot</div>
+                  </div>
+                </button>
+                <input
+                  ref={inspirationFileRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleInspirationFile}
+                  hidden
+                />
+              </>
+            ) : (
+              <>
+                <div className="inspiration-preview">
+                  <img src={inspirationPhoto} alt="Inspiration" />
+                  <button className="btn-ghost" onClick={resetLook}>Use a different photo</button>
+                </div>
+                {!lookAnalysis && (
+                  <button
+                    className="btn-primary btn-large btn-full"
+                    onClick={analyzeInspiration}
+                    disabled={analyzing}
+                  >
+                    {analyzing ? "Analyzing the look... (15-30s)" : <><Icon.Sparkle /> Get the Look</>}
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+
+          {lookAnalysis && (
+            <div className="look-result">
+              <div className="look-header">
+                <h3 className="outfit-title">{lookAnalysis.look_name}</h3>
+                <p className="look-vibe">{lookAnalysis.vibe_description}</p>
               </div>
-              <div className="anchor-name">{item.name}</div>
-            </button>
-          ))}
-        </div>
-      </div>
+
+              <h4 className="look-section-heading">The breakdown</h4>
+              <div className="look-breakdown">
+                {lookAnalysis.outfit_breakdown.map((item, i) => (
+                  <div key={i} className={`breakdown-row breakdown-${item.match_quality}`}>
+                    <div className="breakdown-role">{item.role}</div>
+                    <div className="breakdown-content">
+                      <div className="breakdown-photo">
+                        <span className="breakdown-label">In the photo:</span> {item.garment_in_photo}
+                      </div>
+                      {item.wardrobe_match ? (
+                        <div className="breakdown-match">
+                          <span className={`match-badge match-${item.match_quality}`}>
+                            {item.match_quality === "perfect" && "✓ Perfect match"}
+                            {item.match_quality === "close" && "≈ Close match"}
+                            {item.match_quality === "loose" && "~ Loose match"}
+                          </span>
+                          <span className="match-name">{item.wardrobe_match}</span>
+                          {item.match_reason && <p className="match-reason">{item.match_reason}</p>}
+                        </div>
+                      ) : (
+                        <div className="breakdown-shop">
+                          <span className="shop-badge">🛍️ Shopping gap</span>
+                          <p className="shop-suggestion">{item.shopping_suggestion}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {lookAnalysis.recreation_outfit && lookAnalysis.recreation_outfit.length > 0 && (
+                <>
+                  <h4 className="look-section-heading">Recreate from your wardrobe</h4>
+                  <div className="recreation-pieces">
+                    {lookAnalysis.recreation_outfit.map((name, i) => (
+                      <div key={i} className="outfit-piece">
+                        <span className="piece-name">{name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {lookAnalysis.shopping_gaps && lookAnalysis.shopping_gaps.length > 0 && (
+                <>
+                  <h4 className="look-section-heading">🛍️ To complete this look</h4>
+                  <ul className="shopping-list">
+                    {lookAnalysis.shopping_gaps.map((gap, i) => (
+                      <li key={i}>{gap}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+
+              {lookAnalysis.styling_notes && (
+                <div className="stylist-note">
+                  <span className="note-label">Styling notes</span>
+                  <p>{lookAnalysis.styling_notes}</p>
+                </div>
+              )}
+
+              <button className="btn-ghost btn-full" onClick={resetLook} style={{ marginTop: "1.5rem" }}>
+                Try another look
+              </button>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -2569,6 +2810,123 @@ body {
   font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.15em;
   text-transform: uppercase; color: var(--gold); display: block; margin-bottom: 0.5rem;
 }
+
+/* ─── STYLE MODE TABS ─── */
+.style-mode-tabs {
+  display: flex; gap: 0.5rem; margin-bottom: 1.5rem;
+  background: var(--cream-dark); padding: 0.375rem;
+  border-radius: 12px;
+}
+.style-mode-btn {
+  flex: 1; padding: 0.75rem 1rem; background: transparent;
+  border: none; border-radius: 8px; cursor: pointer;
+  font-family: inherit; font-size: 0.875rem; font-weight: 500;
+  color: var(--ink-muted); transition: all 0.2s;
+}
+.style-mode-btn:hover { color: var(--ink); }
+.style-mode-active {
+  background: white; color: var(--ink);
+  box-shadow: 0 1px 3px rgba(26, 26, 26, 0.08);
+}
+
+/* ─── GET THE LOOK ─── */
+.look-input {
+  background: white; border: 1px solid var(--line);
+  border-radius: 16px; padding: 1.5rem;
+  margin-bottom: 1.5rem;
+  display: flex; flex-direction: column; gap: 1rem;
+}
+.look-prompt { text-align: center; padding: 0.5rem 0; }
+.look-title {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.5rem; font-weight: 500; margin-bottom: 0.5rem;
+}
+.look-sub {
+  color: var(--ink-muted); font-size: 0.9375rem;
+  line-height: 1.5; max-width: 480px; margin: 0 auto;
+}
+.inspiration-preview {
+  display: flex; flex-direction: column; gap: 0.875rem; align-items: center;
+}
+.inspiration-preview img {
+  max-width: 320px; max-height: 480px; width: 100%;
+  border-radius: 12px; object-fit: cover;
+  box-shadow: var(--shadow);
+}
+
+.look-result {
+  background: white; border: 1px solid var(--line);
+  border-radius: 16px; padding: 1.75rem;
+  margin-bottom: 2rem;
+}
+.look-header { margin-bottom: 1.5rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--line); }
+.look-vibe {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.0625rem; line-height: 1.5; color: var(--ink-soft);
+  font-style: italic; margin-top: 0.5rem;
+}
+.look-section-heading {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.25rem; font-weight: 500;
+  margin: 1.5rem 0 0.875rem;
+}
+
+.look-breakdown { display: flex; flex-direction: column; gap: 0.75rem; }
+.breakdown-row {
+  display: flex; gap: 1rem; padding: 1rem 1.125rem;
+  background: var(--cream); border-radius: 10px;
+  border-left: 3px solid var(--ink-muted);
+}
+.breakdown-perfect { border-left-color: var(--success); }
+.breakdown-close { border-left-color: var(--gold); }
+.breakdown-loose { border-left-color: var(--accent); }
+.breakdown-none { border-left-color: var(--error); background: rgba(161, 59, 59, 0.04); }
+.breakdown-role {
+  font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+  min-width: 80px; padding-top: 0.125rem;
+}
+.breakdown-content { flex: 1; }
+.breakdown-photo {
+  font-size: 0.875rem; color: var(--ink-soft); margin-bottom: 0.5rem;
+}
+.breakdown-label {
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--ink-muted);
+  margin-right: 0.375rem;
+}
+.breakdown-match { display: flex; flex-direction: column; gap: 0.25rem; }
+.match-badge {
+  display: inline-block; padding: 0.25rem 0.625rem;
+  border-radius: 100px; font-size: 0.6875rem;
+  font-weight: 600; letter-spacing: 0.05em;
+  align-self: flex-start;
+}
+.match-perfect { background: var(--success); color: white; }
+.match-close { background: var(--gold); color: white; }
+.match-loose { background: var(--accent); color: white; }
+.match-name { font-weight: 600; font-size: 0.9375rem; }
+.match-reason { font-size: 0.8125rem; color: var(--ink-muted); font-style: italic; }
+.breakdown-shop { display: flex; flex-direction: column; gap: 0.375rem; }
+.shop-badge {
+  display: inline-block; padding: 0.25rem 0.625rem;
+  background: rgba(161, 59, 59, 0.12); color: var(--error);
+  border-radius: 100px; font-size: 0.6875rem;
+  font-weight: 600; letter-spacing: 0.05em;
+  align-self: flex-start;
+}
+.shop-suggestion { font-size: 0.875rem; color: var(--ink); line-height: 1.4; }
+
+.recreation-pieces { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.5rem; }
+
+.shopping-list { list-style: none; padding: 0; }
+.shopping-list li {
+  padding: 0.75rem 1rem; background: rgba(193, 154, 107, 0.08);
+  border: 1px dashed var(--gold); border-radius: 8px;
+  margin-bottom: 0.5rem; font-size: 0.9375rem;
+}
+
+.btn-full { width: 100%; }
 
 .anchor-section { margin-top: 2rem; }
 .anchor-heading {
