@@ -584,7 +584,6 @@ function StylePreferenceModal({ onSave, onClose, allowClose }) {
 function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, onUpdate, showNotification }) {
   const [filter, setFilter] = useState("All");
   const [analyzing, setAnalyzing] = useState(false);
-  const [showCamera, setShowCamera] = useState(false);
   const [detail, setDetail] = useState(null);
   const fileInputRef = useRef();
 
@@ -677,19 +676,12 @@ Respond ONLY with valid JSON, no markdown, no preamble:
         </div>
       </div>
 
-      <div className="upload-row">
-        <button className="upload-card" onClick={() => fileInputRef.current?.click()} disabled={analyzing}>
-          <Icon.Upload />
-          <div>
-            <div className="upload-title">{analyzing ? "Analyzing..." : "Upload photo"}</div>
-            <div className="upload-sub">From camera roll or website</div>
-          </div>
-        </button>
-        <button className="upload-card upload-camera" onClick={() => setShowCamera(true)} disabled={analyzing}>
+      <div className="upload-row upload-row-single">
+        <button className="upload-card upload-card-primary" onClick={() => fileInputRef.current?.click()} disabled={analyzing}>
           <Icon.Camera />
           <div>
-            <div className="upload-title">Take photo</div>
-            <div className="upload-sub">Use camera</div>
+            <div className="upload-title">{analyzing ? "Analyzing..." : "Add a photo"}</div>
+            <div className="upload-sub">Camera, photo library, or website</div>
           </div>
         </button>
         <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFile} hidden />
@@ -729,7 +721,6 @@ Respond ONLY with valid JSON, no markdown, no preamble:
         </div>
       )}
 
-      {showCamera && <CameraModal onCapture={analyzePhoto} onClose={() => setShowCamera(false)} />}
       {detail && (
         <ItemDetail
           item={detail}
@@ -1006,7 +997,6 @@ function TryOnTab({ wardrobe, session, showNotification }) {
   const [fashnKey, setFashnKey] = useState("");
   const [keyEntered, setKeyEntered] = useState(false);
   const [personPhoto, setPersonPhoto] = useState(null);
-  const [showPersonCamera, setShowPersonCamera] = useState(false);
   const [selectedGarment, setSelectedGarment] = useState(null);
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState(null);
@@ -1157,12 +1147,13 @@ function TryOnTab({ wardrobe, session, showNotification }) {
               <button className="btn-ghost" onClick={() => setPersonPhoto(null)}>Replace</button>
             </div>
           ) : (
-            <div className="upload-row">
-              <button className="upload-card" onClick={() => personFileRef.current?.click()}>
-                <Icon.Upload /> Upload photo
-              </button>
-              <button className="upload-card" onClick={() => setShowPersonCamera(true)}>
-                <Icon.Camera /> Take photo
+            <div className="upload-row upload-row-single">
+              <button className="upload-card upload-card-primary" onClick={() => personFileRef.current?.click()}>
+                <Icon.Camera />
+                <div>
+                  <div className="upload-title">Add a photo of yourself</div>
+                  <div className="upload-sub">Camera or photo library</div>
+                </div>
               </button>
               <input ref={personFileRef} type="file" accept="image/*" onChange={handlePersonFile} hidden />
             </div>
@@ -1222,8 +1213,6 @@ function TryOnTab({ wardrobe, session, showNotification }) {
           </div>
         )}
       </div>
-
-      {showPersonCamera && <CameraModal facing="user" onCapture={setPersonPhoto} onClose={() => setShowPersonCamera(false)} />}
     </div>
   );
 }
@@ -2171,6 +2160,18 @@ body {
 /* ─── UPLOAD ─── */
 .upload-row {
   display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;
+}
+.upload-row-single { grid-template-columns: 1fr; }
+.upload-card-primary {
+  background: linear-gradient(135deg, var(--ink) 0%, var(--ink-soft) 100%) !important;
+  color: var(--cream) !important;
+  border-style: solid !important;
+  border-color: var(--ink) !important;
+  padding: 1.5rem 1.75rem !important;
+}
+.upload-card-primary:hover:not(:disabled) {
+  background: var(--ink-soft) !important;
+  border-color: var(--ink-soft) !important;
 }
 .upload-card {
   display: flex; align-items: center; gap: 1rem; text-align: left;
