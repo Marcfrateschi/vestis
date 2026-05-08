@@ -636,7 +636,11 @@ function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, onUpdate, sh
       const imageUrl = urlData.publicUrl;
 
       // Analyze with Claude vision
-      const base64 = dataUrl.split(",")[1];
+      // Extract MIME type and base64 from data URL (handles jpeg, png, webp, etc.)
+      const mimeMatch = dataUrl.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
+      const mediaType = mimeMatch ? mimeMatch[1] : "image/jpeg";
+      const base64 = mimeMatch ? mimeMatch[2] : dataUrl.split(",")[1];
+
       const response = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -646,7 +650,7 @@ function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, onUpdate, sh
           messages: [{
             role: "user",
             content: [
-              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
               { type: "text", text: `You are an expert clothing analyst. Analyze this garment carefully.
 
 CRITICAL — COLOR ACCURACY:
@@ -1032,7 +1036,10 @@ Respond ONLY with valid JSON, no markdown:
         ? "The user prefers women's clothing."
         : "The user wears a mix of styles.";
 
-      const base64 = inspirationPhoto.split(",")[1];
+      // Extract MIME type and base64 from data URL (handles jpeg, png, webp, etc.)
+      const mimeMatch = inspirationPhoto.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
+      const mediaType = mimeMatch ? mimeMatch[1] : "image/jpeg";
+      const base64 = mimeMatch ? mimeMatch[2] : inspirationPhoto.split(",")[1];
 
       const response = await fetch("/api/claude", {
         method: "POST",
@@ -1043,7 +1050,7 @@ Respond ONLY with valid JSON, no markdown:
           messages: [{
             role: "user",
             content: [
-              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
               { type: "text", text: `You're a personal stylist analyzing an inspiration photo to help recreate the outfit from the user's existing wardrobe.
 
 ${styleNote}
