@@ -520,6 +520,21 @@ function App() {
         {tab === "pack" && <PackTab wardrobe={wardrobe} session={session} profile={profile} showNotification={showNotification} />}
       </main>
 
+      {tab === "wardrobe" && wardrobe.length > 0 && (
+        <SelfieLogger
+          wardrobe={wardrobe}
+          session={session}
+          profile={profile}
+          onLogged={(updates) => {
+            // Apply wear-count + last-worn updates returned from logging
+            updates.forEach(u => {
+              setWardrobe(prev => prev.map(i => i.id === u.id ? { ...i, ...u.changes } : i));
+            });
+          }}
+          showNotification={showNotification}
+        />
+      )}
+
       {showStyleModal && (
         <StylePreferenceModal
           onSave={saveStylePreference}
@@ -577,6 +592,276 @@ function StylePreferenceModal({ onSave, onClose, allowClose }) {
         </p>
       </div>
     </div>
+  );
+}
+
+// ─── SELFIE LOGGER ──────────────────────────────────────────────────────────
+function SelfieLogger({ wardrobe, session, profile, onLogged, showNotification }) {
+  const [stage, setStage] = useState("idle"); // idle | analyzing | confirm
+  const [selfieDataUrl, setSelfieDataUrl] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
+  const [confirmedIds, setConfirmedIds] = useState([]);
+  const fileRef = useRef();
+
+  const open = () => fileRef.current?.click();
+
+  const close = () => {
+    setStage("idle");
+    setSelfieDataUrl(null);
+    setAnalysis(null);
+    setConfirmedIds([]);
+  };
+
+  const handleFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSelfieDataUrl(reader.result);
+      analyzeSelfie(reader.result);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  const analyzeSelfie = async (dataUrl) => {
+    setStage("analyzing");
+    try {
+      const wardrobeText = wardrobe.map(i =>
+        `[id:${i.id}] ${i.name} (${i.category}, ${i.color}, ${i.style}${i.details ? ", " + i.details : ""})`
+      ).join("\n");
+
+      const mimeMatch = dataUrl.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
+      const mediaType = mimeMatch ? mimeMatch[1] : "image/jpeg";
+      const base64 = mimeMatch ? mimeMatch[2] : dataUrl.split(",")[1];
+
+      const response = await fetch("/api/claude", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 1500,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+              { type: "text", text: `You're analyzing an outfit photo (mirror selfie, full-body, or flat-lay) to identify which items from the user's wardrobe they're wearing.
+
+USER'S WARDROBE:
+${wardrobeText}
+
+For each garment visible in the photo, find the BEST match from the wardrobe (use the item's id). Score your confidence honestly.
+
+Confidence guide:
+- 95+ : unmistakable match (same color, same category, same distinguishing details)
+- 80-94 : very likely match (color and category match, no contradicting details)
+- 60-79 : probable match but some uncertainty (color similar but slightly off, or detail unclear)
+- below 60 : not confident — list as unmatched instead
+
+If you see a garment that doesn't match anything in the wardrobe, list it under "unmatched_items" — don't force a match.
+
+Respond ONLY with valid JSON:
+{
+  "detected_items": [
+    {"wardrobe_id": "the id", "wardrobe_name": "name from wardrobe", "confidence": 95, "reason": "brief why"}
+  ],
+  "unmatched_items": ["description of any visible garment not in wardrobe"],
+  "outfit_summary": "one-line description of the look"
+}` }
+            ]
+          }]
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.content || !data.content[0]) {
+        throw new Error(data.error || data.detail?.error?.message || "Analysis failed");
+      }
+      const text = data.content[0].text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(text);
+
+      // Filter detected items to actual wardrobe entries (defensive)
+      const validIds = new Set(wardrobe.map(i => i.id));
+      parsed.detected_items = (parsed.detected_items || []).filter(d => validIds.has(d.wardrobe_id));
+
+      setAnalysis(parsed);
+
+      // Auto-log if all matches are 95+
+      const allPerfect = parsed.detected_items.length > 0
+        && parsed.detected_items.every(d => d.confidence >= 95)
+        && (parsed.unmatched_items?.length || 0) === 0;
+
+      if (allPerfect) {
+        await commitLog(parsed.detected_items.map(d => d.wardrobe_id), parsed, dataUrl, true);
+      } else {
+        // Pre-select items above the auto-confirm threshold
+        setConfirmedIds(parsed.detected_items.filter(d => d.confidence >= 80).map(d => d.wardrobe_id));
+        setStage("confirm");
+      }
+    } catch (err) {
+      showNotification("Couldn't read selfie: " + err.message);
+      close();
+    }
+  };
+
+  const toggleId = (id) => {
+    setConfirmedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const commitLog = async (ids, parsedAnalysis, dataUrl, autoSilent = false) => {
+    if (ids.length === 0) {
+      showNotification("Nothing logged");
+      close();
+      return;
+    }
+    try {
+      // Upload selfie if user wants to keep them
+      let selfieUrl = null;
+      if (profile?.keep_selfies !== false && dataUrl) {
+        try {
+          const blob = await (await fetch(dataUrl)).blob();
+          const path = `${session.user.id}/${Date.now()}.jpg`;
+          const { error: upErr } = await supabase.storage
+            .from("outfit-selfies")
+            .upload(path, blob, { contentType: blob.type || "image/jpeg" });
+          if (!upErr) {
+            const { data: urlData } = supabase.storage.from("outfit-selfies").getPublicUrl(path);
+            selfieUrl = urlData?.publicUrl || null;
+          }
+        } catch {}
+      }
+
+      // Insert log row
+      await supabase.from("outfit_logs").insert({
+        user_id: session.user.id,
+        selfie_url: selfieUrl,
+        detected_items: parsedAnalysis.detected_items.filter(d => ids.includes(d.wardrobe_id)),
+        unmatched_items: parsedAnalysis.unmatched_items || [],
+        worn_date: new Date().toISOString().split("T")[0],
+      });
+
+      // Update wear count + last worn for each item
+      const today = new Date().toISOString();
+      const updates = [];
+      for (const id of ids) {
+        const item = wardrobe.find(i => i.id === id);
+        if (!item) continue;
+        const newCount = (item.wear_count || 0) + 1;
+        await supabase.from("wardrobe_items").update({
+          last_worn_date: today,
+          wear_count: newCount,
+        }).eq("id", id);
+        updates.push({ id, changes: { last_worn_date: today, wear_count: newCount } });
+      }
+
+      if (onLogged) onLogged(updates);
+
+      const msg = autoSilent
+        ? `Logged ${ids.length} ${ids.length === 1 ? "item" : "items"} ✓`
+        : `Logged ${ids.length} ${ids.length === 1 ? "item" : "items"}`;
+      showNotification(msg);
+      close();
+    } catch (err) {
+      showNotification("Save failed: " + err.message);
+    }
+  };
+
+  return (
+    <>
+      <button className="selfie-fab" onClick={open} title="Log what I'm wearing" disabled={stage === "analyzing"}>
+        {stage === "analyzing" ? (
+          <div className="fab-spinner" />
+        ) : (
+          <Icon.Camera />
+        )}
+        <span className="fab-label">Log fit</span>
+      </button>
+      <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} hidden />
+
+      {stage === "analyzing" && (
+        <div className="modal-overlay">
+          <div className="selfie-analyzing-modal">
+            <div className="fab-spinner big" />
+            <h3 className="detail-name" style={{ marginTop: "1rem" }}>Reading your fit...</h3>
+            <p style={{ color: "var(--ink-muted)", fontSize: "0.875rem" }}>Matching to your wardrobe</p>
+          </div>
+        </div>
+      )}
+
+      {stage === "confirm" && analysis && (
+        <div className="modal-overlay" onClick={close}>
+          <div className="detail-modal selfie-confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={close}><Icon.X /></button>
+            <h3 className="detail-name" style={{ marginTop: 0 }}>Confirm what you wore</h3>
+            {analysis.outfit_summary && (
+              <p style={{ color: "var(--ink-soft)", fontStyle: "italic", marginBottom: "1rem" }}>
+                "{analysis.outfit_summary}"
+              </p>
+            )}
+
+            {selfieDataUrl && (
+              <img src={selfieDataUrl} alt="Your fit" className="selfie-thumb" />
+            )}
+
+            <p style={{ color: "var(--ink-muted)", fontSize: "0.8125rem", marginTop: "1rem" }}>
+              Tap to confirm or remove. We'll log only what you confirm.
+            </p>
+
+            <div className="confirm-list">
+              {analysis.detected_items.map(d => {
+                const item = wardrobe.find(i => i.id === d.wardrobe_id);
+                if (!item) return null;
+                const checked = confirmedIds.includes(d.wardrobe_id);
+                return (
+                  <button
+                    key={d.wardrobe_id}
+                    type="button"
+                    className={`confirm-row ${checked ? "confirm-checked" : ""}`}
+                    onClick={() => toggleId(d.wardrobe_id)}
+                  >
+                    <div className="confirm-thumb">
+                      {item.image_url ? <img src={item.image_url} alt={item.name} /> : <span>{CATEGORY_EMOJI[item.category] || "✨"}</span>}
+                    </div>
+                    <div className="confirm-info">
+                      <div className="confirm-name">{item.name}</div>
+                      <div className="confirm-meta">
+                        <span className={`confirm-badge confirm-${d.confidence >= 95 ? "high" : d.confidence >= 80 ? "med" : "low"}`}>
+                          {d.confidence}% match
+                        </span>
+                        <span className="confirm-reason">{d.reason}</span>
+                      </div>
+                    </div>
+                    <div className="confirm-check">{checked ? "✓" : ""}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {analysis.unmatched_items && analysis.unmatched_items.length > 0 && (
+              <div className="unmatched-block">
+                <div className="unmatched-label">Couldn't match these:</div>
+                <ul className="unmatched-list">
+                  {analysis.unmatched_items.map((u, i) => <li key={i}>{u}</li>)}
+                </ul>
+                <p className="unmatched-hint">Tip: photograph these to add them to your wardrobe.</p>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "0.625rem", marginTop: "1.25rem" }}>
+              <button className="btn-ghost" onClick={close} style={{ flex: 1 }}>Cancel</button>
+              <button
+                className="btn-primary"
+                onClick={() => commitLog(confirmedIds, analysis, selfieDataUrl, false)}
+                style={{ flex: 1 }}
+                disabled={confirmedIds.length === 0}
+              >
+                Log {confirmedIds.length > 0 ? `${confirmedIds.length} ${confirmedIds.length === 1 ? "item" : "items"}` : "items"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -3378,6 +3663,123 @@ body {
   font-style: italic;
 }
 
+/* ─── SELFIE LOGGER ─── */
+.selfie-fab {
+  position: fixed; bottom: 1.5rem; right: 1.5rem;
+  display: flex; align-items: center; gap: 0.625rem;
+  padding: 0.875rem 1.25rem;
+  background: var(--ink); color: var(--cream);
+  border: none; border-radius: 100px;
+  font-family: inherit; font-size: 0.875rem; font-weight: 600;
+  cursor: pointer; z-index: 100;
+  box-shadow: 0 8px 24px rgba(26, 26, 26, 0.25), 0 2px 6px rgba(26, 26, 26, 0.12);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.selfie-fab:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px rgba(26, 26, 26, 0.32), 0 4px 8px rgba(26, 26, 26, 0.16);
+}
+.selfie-fab:disabled { opacity: 0.7; cursor: wait; }
+.selfie-fab svg { width: 18px; height: 18px; }
+.fab-label {
+  letter-spacing: 0.02em;
+}
+.fab-spinner {
+  width: 18px; height: 18px;
+  border: 2px solid rgba(245, 240, 230, 0.3);
+  border-top-color: var(--cream);
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+.fab-spinner.big {
+  width: 36px; height: 36px; border-width: 3px;
+  border-color: rgba(26, 26, 26, 0.15);
+  border-top-color: var(--ink);
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.selfie-analyzing-modal {
+  background: white; border-radius: 16px;
+  padding: 2.5rem; text-align: center;
+  display: flex; flex-direction: column; align-items: center;
+  min-width: 280px;
+}
+.selfie-confirm-modal { max-width: 540px; }
+.selfie-thumb {
+  display: block; max-width: 200px; max-height: 280px;
+  margin: 0 auto; border-radius: 12px; object-fit: cover;
+  box-shadow: var(--shadow);
+}
+
+.confirm-list {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  margin-top: 0.625rem;
+  max-height: 360px; overflow-y: auto;
+}
+.confirm-row {
+  display: flex; align-items: center; gap: 0.875rem;
+  padding: 0.75rem; background: white;
+  border: 1.5px solid var(--line); border-radius: 12px;
+  cursor: pointer; transition: all 0.15s;
+  font-family: inherit; text-align: left;
+}
+.confirm-row:hover { border-color: var(--ink-muted); }
+.confirm-checked {
+  background: var(--cream); border-color: var(--ink);
+}
+.confirm-thumb {
+  width: 56px; height: 56px; flex-shrink: 0;
+  background: var(--cream); border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; font-size: 1.5rem;
+}
+.confirm-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.confirm-info { flex: 1; min-width: 0; }
+.confirm-name { font-weight: 600; font-size: 0.9375rem; margin-bottom: 0.25rem; }
+.confirm-meta { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.confirm-badge {
+  display: inline-block; padding: 0.125rem 0.5rem;
+  border-radius: 100px; font-size: 0.6875rem;
+  font-weight: 600; letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+.confirm-high { background: var(--success); color: white; }
+.confirm-med { background: var(--gold); color: white; }
+.confirm-low { background: var(--accent); color: white; }
+.confirm-reason {
+  font-size: 0.75rem; color: var(--ink-muted);
+  font-style: italic; line-height: 1.3;
+}
+.confirm-check {
+  width: 28px; height: 28px; flex-shrink: 0;
+  border-radius: 50%; background: var(--ink);
+  color: var(--cream); display: flex;
+  align-items: center; justify-content: center;
+  font-weight: 700; font-size: 0.875rem;
+  opacity: 0; transition: opacity 0.15s;
+}
+.confirm-checked .confirm-check { opacity: 1; }
+
+.unmatched-block {
+  background: rgba(193, 154, 107, 0.08);
+  border: 1px dashed var(--gold);
+  border-radius: 10px; padding: 0.875rem 1rem;
+  margin-top: 1rem;
+}
+.unmatched-label {
+  font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--gold);
+  margin-bottom: 0.375rem;
+}
+.unmatched-list {
+  list-style: none; padding: 0; margin: 0;
+  font-size: 0.875rem; color: var(--ink);
+}
+.unmatched-list li { padding: 0.25rem 0; }
+.unmatched-hint {
+  font-size: 0.75rem; color: var(--ink-muted);
+  margin-top: 0.5rem; font-style: italic;
+}
+
 @media (max-width: 640px) {
   .upload-row { grid-template-columns: 1fr; }
   .pack-row { flex-direction: column; }
@@ -3388,6 +3790,9 @@ body {
   .pref-btn span { display: none; }
   .bag-grid { grid-template-columns: 1fr; }
   .special-events-grid { grid-template-columns: 1fr; }
+  .selfie-fab { bottom: 5rem; right: 1rem; padding: 0.75rem 1rem; }
+  .fab-label { display: none; }
+  .selfie-fab svg { width: 22px; height: 22px; }
 }
 `;
 
