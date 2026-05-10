@@ -338,8 +338,8 @@ function App() {
         .eq("id", session.user.id)
         .maybeSingle();
       setProfile(data);
-      // Show modal if style preference not yet set
-      if (data && !data.style_preference) {
+      // Show modal if style preference not yet set OR is the legacy "both" value
+      if (data && (!data.style_preference || data.style_preference === "both")) {
         setShowStyleModal(true);
       }
     } catch (err) {
@@ -472,9 +472,8 @@ function App() {
             onClick={() => setShowStyleModal(true)}
             title="Change style preference"
           >
-            {profile?.style_preference === "mens" && "👨 Men's"}
-            {profile?.style_preference === "womens" && "👩 Women's"}
-            {profile?.style_preference === "both" && "🧑 Both"}
+            {profile?.style_preference === "mens" && "Men's"}
+            {profile?.style_preference === "womens" && "Women's"}
             {!profile?.style_preference && "Set style"}
           </button>
           <span className="user-email">{session.user.email}</span>
@@ -537,7 +536,7 @@ function App() {
         <StylePreferenceModal
           onSave={saveStylePreference}
           onClose={() => setShowStyleModal(false)}
-          allowClose={!!profile?.style_preference}
+          allowClose={profile?.style_preference === "mens" || profile?.style_preference === "womens"}
         />
       )}
     </div>
@@ -549,9 +548,8 @@ function StylePreferenceModal({ onSave, onClose, allowClose }) {
   const [selected, setSelected] = useState(null);
 
   const options = [
-    { id: "mens", emoji: "👨", label: "Men's clothing", desc: "Suits, shirts, ties, oxfords" },
-    { id: "womens", emoji: "👩", label: "Women's clothing", desc: "Dresses, skirts, blouses, heels" },
-    { id: "both", emoji: "🧑", label: "Both / Non-binary", desc: "Mix and match across styles" },
+    { id: "mens", label: "Men's", desc: "Suits, shirts, ties, oxfords" },
+    { id: "womens", label: "Women's", desc: "Dresses, skirts, blouses, heels" },
   ];
 
   return (
@@ -560,7 +558,7 @@ function StylePreferenceModal({ onSave, onClose, allowClose }) {
         {allowClose && <button className="modal-close" onClick={onClose}><Icon.X /></button>}
         <h3 className="detail-name" style={{ marginTop: 0 }}>Welcome to VESTIS</h3>
         <p style={{ color: "var(--ink-muted)", fontSize: "0.9375rem", marginBottom: "1.5rem" }}>
-          To give you better styling recommendations, which clothing categories should I focus on for you?
+          To give you better styling recommendations, which clothing categories should I focus on?
         </p>
         <div className="style-pref-options">
           {options.map(opt => (
@@ -569,7 +567,6 @@ function StylePreferenceModal({ onSave, onClose, allowClose }) {
               className={`style-pref-card ${selected === opt.id ? "style-pref-selected" : ""}`}
               onClick={() => setSelected(opt.id)}
             >
-              <span className="style-pref-emoji">{opt.emoji}</span>
               <div>
                 <div className="style-pref-label">{opt.label}</div>
                 <div className="style-pref-desc">{opt.desc}</div>
@@ -586,7 +583,7 @@ function StylePreferenceModal({ onSave, onClose, allowClose }) {
           Continue
         </button>
         <p style={{ fontSize: "0.75rem", color: "var(--ink-muted)", textAlign: "center", marginTop: "0.875rem" }}>
-          You can change this anytime from your profile.
+          You can change this anytime from the header.
         </p>
       </div>
     </div>
@@ -871,32 +868,32 @@ function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, onUpdate, sh
   const fileInputRef = useRef();
 
   const categories = ["All", ...new Set(wardrobe.map(i => i.category))];
-  const wearFilters = ["🔥 Recently worn", "💤 Dormant 30+", "💤 Dormant 60+", "💤 Dormant 90+", "✨ Never worn"];
+  const wearFilters = ["Recently worn", "Dormant 30+", "Dormant 60+", "Dormant 90+", "Never worn"];
 
   let filtered;
   if (filter === "All") {
     filtered = wardrobe;
-  } else if (filter === "🔥 Recently worn") {
+  } else if (filter === "Recently worn") {
     filtered = wardrobe.filter(i => {
       const d = daysSince(i.last_worn_date);
       return d !== null && d <= 7;
     });
-  } else if (filter === "💤 Dormant 30+") {
+  } else if (filter === "Dormant 30+") {
     filtered = wardrobe.filter(i => {
       const d = daysSince(i.last_worn_date);
       return d !== null && d >= 30;
     });
-  } else if (filter === "💤 Dormant 60+") {
+  } else if (filter === "Dormant 60+") {
     filtered = wardrobe.filter(i => {
       const d = daysSince(i.last_worn_date);
       return d !== null && d >= 60;
     });
-  } else if (filter === "💤 Dormant 90+") {
+  } else if (filter === "Dormant 90+") {
     filtered = wardrobe.filter(i => {
       const d = daysSince(i.last_worn_date);
       return d !== null && d >= 90;
     });
-  } else if (filter === "✨ Never worn") {
+  } else if (filter === "Never worn") {
     filtered = wardrobe.filter(i => !i.last_worn_date);
   } else {
     filtered = wardrobe.filter(i => i.category === filter);
