@@ -102,67 +102,65 @@ function AuthScreen({ onAuthSuccess }) {
   };
 
   return (
-    <div className="auth-wrap">
-      <div className="auth-bg-orb orb-1"></div>
-      <div className="auth-bg-orb orb-2"></div>
-      <div className="auth-card">
-        <div className="auth-brand">
-          <div className="auth-logo">V</div>
-          <h1 className="auth-wordmark">VESTIS</h1>
-          <p className="auth-tag">Your wardrobe, intelligent.</p>
-        </div>
+    <div className="auth-wrap-v2">
+      <div className="auth-dot-pattern"></div>
+      <div className="auth-content">
+        <div className="auth-mark">V</div>
+        <h1 className="auth-wordmark-v2">VESTIS</h1>
+        <div className="auth-divider-v2"></div>
+        <p className="auth-tagline-v2">There's a difference between<br/>owning clothes and having a wardrobe.</p>
 
-        <form onSubmit={handleSubmit} className="auth-form">
-          <label className="auth-label">
-            Email
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              autoComplete="email"
-              className="auth-input"
-              placeholder="you@example.com"
-            />
-          </label>
+        <form onSubmit={handleSubmit} className="auth-form-v2">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            autoComplete="email"
+            className="auth-input-v2"
+            placeholder="Email"
+          />
 
           {mode !== "reset" && (
-            <label className="auth-label">
-              Password
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength={6}
-                autoComplete={mode === "login" ? "current-password" : "new-password"}
-                className="auth-input"
-                placeholder="••••••••"
-              />
-            </label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={6}
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              className="auth-input-v2"
+              placeholder="Password"
+            />
           )}
 
-          {error && <div className="auth-error">{error}</div>}
-          {message && <div className="auth-message">{message}</div>}
+          {error && <div className="auth-error-v2">{error}</div>}
+          {message && <div className="auth-message-v2">{message}</div>}
 
-          <button type="submit" className="auth-submit" disabled={loading}>
-            {loading ? "..." : mode === "signup" ? "Create account" : mode === "login" ? "Sign in" : "Send reset link"}
+          <button type="submit" className="auth-submit-v2" disabled={loading}>
+            {loading ? "..." : mode === "signup" ? "Create account" : mode === "login" ? "Continue" : "Send reset link"}
           </button>
         </form>
 
-        <div className="auth-switcher">
+        <div className="auth-switcher-v2">
           {mode === "login" && (
             <>
-              <button onClick={() => { setMode("signup"); setError(null); setMessage(null); }} className="auth-link">New to VESTIS? Create an account</button>
-              <button onClick={() => { setMode("reset"); setError(null); setMessage(null); }} className="auth-link auth-link-subtle">Forgot password?</button>
+              <button onClick={() => { setMode("signup"); setError(null); setMessage(null); }} className="auth-link-v2">New here? <span>Create account</span></button>
+              <button onClick={() => { setMode("reset"); setError(null); setMessage(null); }} className="auth-link-v2 auth-link-subtle-v2">Forgot password?</button>
             </>
           )}
           {mode === "signup" && (
-            <button onClick={() => { setMode("login"); setError(null); setMessage(null); }} className="auth-link">Already have an account? Sign in</button>
+            <button onClick={() => { setMode("login"); setError(null); setMessage(null); }} className="auth-link-v2">Have an account? <span>Sign in</span></button>
           )}
           {mode === "reset" && (
-            <button onClick={() => { setMode("login"); setError(null); setMessage(null); }} className="auth-link">Back to sign in</button>
+            <button onClick={() => { setMode("login"); setError(null); setMessage(null); }} className="auth-link-v2"><span>Back to sign in</span></button>
           )}
+        </div>
+
+        <div className="auth-footer">
+          <span className="auth-footer-mark">VESTIS</span>
+          <span className="auth-footer-sep">·</span>
+          <span>Your wardrobe, intelligent.</span>
         </div>
       </div>
     </div>
@@ -985,21 +983,97 @@ Respond ONLY with valid JSON, no markdown, no preamble:
     e.target.value = "";
   };
 
+  // Compute dashboard stats
+  const dashStats = (() => {
+    const total = wardrobe.length;
+    const dormantCount = wardrobe.filter(i => {
+      const d = daysSince(i.last_worn_date);
+      return d !== null && d >= 60;
+    }).length;
+    const recentCount = wardrobe.filter(i => {
+      const d = daysSince(i.last_worn_date);
+      return d !== null && d <= 7;
+    }).length;
+    const neverCount = wardrobe.filter(i => !i.last_worn_date).length;
+
+    // Find most recently worn item (the AI insight surface)
+    const mostRecent = wardrobe
+      .filter(i => i.last_worn_date)
+      .sort((a, b) => new Date(b.last_worn_date) - new Date(a.last_worn_date))[0];
+
+    return { total, dormantCount, recentCount, neverCount, mostRecent };
+  })();
+
+  // Generate a dashboard insight message
+  const insightMessage = (() => {
+    if (dashStats.total === 0) return null;
+    if (dashStats.dormantCount >= 5) {
+      return `You have ${dashStats.dormantCount} pieces dormant 60+ days. Try rotating one in this week.`;
+    }
+    if (dashStats.recentCount >= 5) {
+      return `You've worn ${dashStats.recentCount} pieces this week. Your wardrobe is working hard.`;
+    }
+    if (dashStats.neverCount >= 3) {
+      return `${dashStats.neverCount} pieces in your wardrobe are still unworn. They're waiting for the right occasion.`;
+    }
+    if (dashStats.mostRecent) {
+      const days = daysSince(dashStats.mostRecent.last_worn_date);
+      if (days === 0) return `You wore your ${dashStats.mostRecent.name.toLowerCase()} today. Tomorrow's a fresh canvas.`;
+      if (days <= 3) return `Your ${dashStats.mostRecent.name.toLowerCase()} is on rotation — last worn ${days === 1 ? "yesterday" : `${days} days ago`}.`;
+    }
+    return "Your wardrobe is ready when you are.";
+  })();
+
+  // Greeting based on time
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const userName = (session?.user?.email || "").split("@")[0].split(".")[0];
+  const displayName = userName.charAt(0).toUpperCase() + userName.slice(1);
+
   return (
     <div className="tab-content">
-      <div className="section-header">
+      {wardrobe.length > 0 && (
+        <div className="dash-greeting">
+          <div className="dash-greeting-eyebrow">{greeting}</div>
+          <h2 className="dash-greeting-name">Welcome back, <i>{displayName}</i></h2>
+        </div>
+      )}
+
+      {wardrobe.length > 0 && insightMessage && (
+        <div className="dash-insight-card">
+          <div className="dash-insight-mark">V</div>
+          <div className="dash-insight-content">
+            <div className="dash-insight-label">VESTIS Insight</div>
+            <div className="dash-insight-text">{insightMessage}</div>
+          </div>
+        </div>
+      )}
+
+      {wardrobe.length > 0 && (
+        <div className="dash-stats">
+          <div className="dash-stat">
+            <div className="dash-stat-label">Pieces</div>
+            <div className="dash-stat-num">{dashStats.total}</div>
+          </div>
+          <div className="dash-stat">
+            <div className="dash-stat-label">Worn this week</div>
+            <div className="dash-stat-num">{dashStats.recentCount}</div>
+          </div>
+          <div className="dash-stat dash-stat-warn">
+            <div className="dash-stat-label">Dormant 60+</div>
+            <div className="dash-stat-num">{dashStats.dormantCount}</div>
+          </div>
+          <div className="dash-stat">
+            <div className="dash-stat-label">Never worn</div>
+            <div className="dash-stat-num">{dashStats.neverCount}</div>
+          </div>
+        </div>
+      )}
+
+      <div className="section-header" style={{ marginTop: wardrobe.length > 0 ? "1rem" : "0" }}>
         <div>
-          <h2 className="section-title">Your Wardrobe</h2>
-          <p className="section-sub">
-            {wardrobe.length} pieces · synced to cloud
-            {(() => {
-              const dormant = wardrobe.filter(i => {
-                const d = daysSince(i.last_worn_date);
-                return d !== null && d >= 60;
-              }).length;
-              return dormant > 0 ? <span> · <strong>{dormant} dormant 60+</strong></span> : null;
-            })()}
-          </p>
+          <h2 className="section-title">{wardrobe.length === 0 ? "Your Wardrobe" : "All Items"}</h2>
+          {wardrobe.length === 0 && <p className="section-sub">Start by adding a piece — VESTIS does the rest.</p>}
         </div>
       </div>
 
@@ -2604,7 +2678,7 @@ function colorToCSS(color) {
 
 // ─── STYLES ─────────────────────────────────────────────────────────────────
 const styles = `
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Inter+Tight:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Inter+Tight:wght@300;400;500;600;700&family=Italiana&display=swap');
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -2645,6 +2719,217 @@ body {
   animation: pulse 1.5s ease-in-out infinite;
 }
 @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+/* ─── AUTH SCREEN V2 — MINIMALIST ─── */
+.auth-wrap-v2 {
+  min-height: 100vh;
+  background: var(--cream);
+  display: flex; align-items: center; justify-content: center;
+  padding: 2rem 1.5rem;
+  position: relative; overflow: hidden;
+}
+.auth-dot-pattern {
+  position: absolute; inset: 0;
+  background-image: radial-gradient(circle at 1px 1px, rgba(26,26,26,0.04) 1px, transparent 0);
+  background-size: 24px 24px;
+  pointer-events: none;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+}
+.auth-content {
+  position: relative; z-index: 2;
+  width: 100%; max-width: 320px;
+  display: flex; flex-direction: column; align-items: center;
+  animation: authFadeIn 0.6s ease-out;
+}
+@keyframes authFadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.auth-mark {
+  width: 56px; height: 56px; border-radius: 50%;
+  background: var(--ink); color: var(--cream);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Italiana', 'Cormorant Garamond', serif;
+  font-size: 1.625rem; font-weight: 400;
+  margin-bottom: 2.5rem;
+  box-shadow: 0 4px 16px rgba(26,26,26,0.12);
+}
+.auth-wordmark-v2 {
+  font-family: 'Italiana', 'Cormorant Garamond', serif;
+  font-size: 3rem; font-weight: 400; letter-spacing: 0.2em;
+  margin: 0; color: var(--ink);
+  text-align: center;
+}
+.auth-divider-v2 {
+  width: 56px; height: 1px;
+  background: var(--gold);
+  margin: 0.875rem 0 1.25rem;
+}
+.auth-tagline-v2 {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.0625rem; font-weight: 400; font-style: italic;
+  color: var(--ink-soft);
+  text-align: center; line-height: 1.5;
+  margin-bottom: 2.5rem;
+  max-width: 280px;
+}
+.auth-form-v2 {
+  width: 100%;
+  display: flex; flex-direction: column; gap: 0.625rem;
+}
+.auth-input-v2 {
+  width: 100%;
+  padding: 0.875rem 1rem;
+  background: white;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font-family: inherit; font-size: 0.9375rem;
+  color: var(--ink);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.auth-input-v2::placeholder { color: var(--ink-muted); }
+.auth-input-v2:focus {
+  outline: none;
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(26,26,26,0.06);
+}
+.auth-submit-v2 {
+  width: 100%;
+  padding: 0.875rem 1.5rem;
+  margin-top: 0.5rem;
+  background: var(--ink); color: var(--cream);
+  border: none; border-radius: 8px;
+  font-family: inherit; font-size: 0.875rem; font-weight: 600;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+}
+.auth-submit-v2:hover:not(:disabled) {
+  background: var(--ink-soft);
+}
+.auth-submit-v2:active:not(:disabled) { transform: scale(0.98); }
+.auth-submit-v2:disabled { opacity: 0.6; cursor: wait; }
+.auth-error-v2 {
+  font-size: 0.8125rem; color: #a13b3b;
+  background: rgba(161,59,59,0.06); border-radius: 6px;
+  padding: 0.5rem 0.75rem; text-align: center;
+}
+.auth-message-v2 {
+  font-size: 0.8125rem; color: var(--ink-soft);
+  background: rgba(193,154,107,0.1);
+  border-left: 3px solid var(--gold);
+  border-radius: 4px;
+  padding: 0.625rem 0.875rem;
+}
+.auth-switcher-v2 {
+  margin-top: 1.5rem;
+  display: flex; flex-direction: column; gap: 0.5rem;
+  align-items: center;
+}
+.auth-link-v2 {
+  background: transparent; border: none;
+  font-family: inherit; font-size: 0.8125rem;
+  color: var(--ink-muted); cursor: pointer;
+  padding: 0.25rem 0.5rem;
+}
+.auth-link-v2 span {
+  color: var(--ink); text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.auth-link-v2:hover span { color: var(--gold); }
+.auth-link-subtle-v2 { font-size: 0.75rem; opacity: 0.7; }
+.auth-footer {
+  margin-top: 4rem;
+  font-size: 0.6875rem; color: var(--ink-muted);
+  letter-spacing: 0.05em;
+  display: flex; align-items: center; gap: 0.625rem;
+}
+.auth-footer-mark {
+  font-family: 'Italiana', 'Cormorant Garamond', serif;
+  font-size: 0.75rem; letter-spacing: 0.18em;
+  color: var(--ink);
+}
+.auth-footer-sep { opacity: 0.5; }
+
+/* ─── DASHBOARD GREETING ─── */
+.dash-greeting {
+  margin-bottom: 1.25rem;
+  animation: authFadeIn 0.5s ease-out;
+}
+.dash-greeting-eyebrow {
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--ink-muted);
+  margin-bottom: 0.375rem;
+}
+.dash-greeting-name {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 2.25rem; font-weight: 500; line-height: 1.05;
+  margin: 0; color: var(--ink);
+}
+.dash-greeting-name i {
+  color: var(--gold); font-style: italic;
+}
+
+.dash-insight-card {
+  background: var(--ink); color: var(--cream);
+  border-radius: 14px;
+  padding: 1.125rem 1.25rem;
+  display: flex; align-items: center; gap: 1rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 6px 18px rgba(26,26,26,0.12);
+  animation: authFadeIn 0.5s ease-out 0.1s backwards;
+}
+.dash-insight-mark {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: var(--gold); color: var(--ink);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Italiana', 'Cormorant Garamond', serif;
+  font-size: 1.375rem; font-weight: 400;
+  flex-shrink: 0;
+}
+.dash-insight-content { flex: 1; min-width: 0; }
+.dash-insight-label {
+  font-size: 0.625rem; font-weight: 600; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--gold);
+  margin-bottom: 0.25rem;
+}
+.dash-insight-text {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.0625rem; line-height: 1.4;
+  color: var(--cream);
+}
+
+.dash-stats {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 0.625rem;
+  margin-bottom: 1.5rem;
+  animation: authFadeIn 0.5s ease-out 0.2s backwards;
+}
+.dash-stat {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.875rem 0.75rem;
+  text-align: left;
+}
+.dash-stat-warn {
+  background: linear-gradient(135deg, #fefaf2 0%, white 100%);
+  border-color: var(--gold);
+}
+.dash-stat-label {
+  font-size: 0.625rem; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+  margin-bottom: 0.5rem;
+  line-height: 1.3;
+}
+.dash-stat-num {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 2rem; font-weight: 500; line-height: 1;
+  color: var(--ink);
+}
+.dash-stat-warn .dash-stat-num { color: var(--accent); }
 
 .auth-wrap {
   min-height: 100vh; display: flex; align-items: center; justify-content: center;
@@ -3793,6 +4078,10 @@ body {
   .selfie-fab { bottom: 5rem; right: 1rem; padding: 0.75rem 1rem; }
   .fab-label { display: none; }
   .selfie-fab svg { width: 22px; height: 22px; }
+  .dash-stats { grid-template-columns: 1fr 1fr; }
+  .dash-greeting-name { font-size: 1.875rem; }
+  .dash-insight-card { padding: 1rem 1.125rem; }
+  .dash-insight-text { font-size: 0.9375rem; }
 }
 `;
 
