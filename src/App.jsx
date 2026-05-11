@@ -41,7 +41,39 @@ const Icon = {
   X: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
   Trash: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/></svg>,
   LogOut: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+  Info: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>,
 };
+
+// Reusable help tooltip: tap the ⓘ to expand a short tip
+function HelpTip({ children, label = "Help" }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="help-tip-wrap">
+      <button
+        type="button"
+        className="help-tip-btn"
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+        aria-label={label}
+        title={label}
+      >
+        <Icon.Info />
+      </button>
+      {open && (
+        <span className="help-tip-bubble" onClick={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            className="help-tip-close"
+            onClick={(e) => { e.stopPropagation(); setOpen(false); }}
+            aria-label="Close tip"
+          >
+            ×
+          </button>
+          {children}
+        </span>
+      )}
+    </span>
+  );
+}
 
 const CATEGORY_EMOJI = {
   "Tops": "👔", "Bottoms": "👖", "Outerwear": "🧥", "Shoes": "👞",
@@ -264,6 +296,7 @@ function App() {
   const [notification, setNotification] = useState(null);
   const [profile, setProfile] = useState(null);
   const [showStyleModal, setShowStyleModal] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
 
   const showNotification = (msg) => {
     setNotification(msg);
@@ -476,6 +509,13 @@ function App() {
             {profile?.style_preference === "womens" && "Women's"}
             {!profile?.style_preference && "Set style"}
           </button>
+          <button
+            className="feedback-btn"
+            onClick={() => setShowFeedbackModal(true)}
+            title="Send feedback"
+          >
+            Feedback
+          </button>
           <span className="user-email">{session.user.email}</span>
           <button className="signout-btn" onClick={handleSignOut} title="Sign out">
             <Icon.LogOut />
@@ -539,6 +579,15 @@ function App() {
           allowClose={profile?.style_preference === "mens" || profile?.style_preference === "womens"}
         />
       )}
+
+      {showFeedbackModal && (
+        <FeedbackModal
+          session={session}
+          tab={tab}
+          onClose={() => setShowFeedbackModal(false)}
+          showNotification={showNotification}
+        />
+      )}
     </div>
   );
 }
@@ -590,6 +639,126 @@ function StylePreferenceModal({ onSave, onClose, allowClose }) {
   );
 }
 
+// ─── FEEDBACK MODAL ─────────────────────────────────────────────────────────
+function FeedbackModal({ session, tab, onClose, showNotification }) {
+  const [kind, setKind] = useState("feedback"); // 'feedback' | 'bug'
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!message.trim()) return;
+    setSubmitting(true);
+    try {
+      const context = {
+        current_tab: tab,
+        viewport: `${window.innerWidth}x${window.innerHeight}`,
+        user_agent: navigator.userAgent.slice(0, 200),
+        url: window.location.pathname,
+      };
+      const { error } = await supabase.from("feedback").insert({
+        user_id: session?.user?.id || null,
+        user_email: session?.user?.email || null,
+        kind,
+        message: message.trim(),
+        context,
+      });
+      if (error) throw error;
+      setSubmitted(true);
+      setTimeout(() => {
+        onClose();
+      }, 1800);
+    } catch (err) {
+      showNotification("Couldn't send: " + err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (submitted) {
+    return (
+      <div className="modal-overlay" onClick={onClose}>
+        <div className="detail-modal feedback-modal feedback-submitted" onClick={(e) => e.stopPropagation()}>
+          <div className="feedback-check">✓</div>
+          <h3 className="detail-name" style={{ marginTop: "1rem", textAlign: "center" }}>Thank you</h3>
+          <p style={{ textAlign: "center", color: "var(--ink-soft)", marginTop: "0.5rem" }}>
+            {kind === "bug" ? "Bug report received — we'll look into it." : "Your feedback means a lot. We read every note."}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="detail-modal feedback-modal" onClick={(e) => e.stopPropagation()}>
+        <button className="modal-close" onClick={onClose}><Icon.X /></button>
+        <h3 className="detail-name" style={{ marginTop: 0 }}>Help us shape VESTIS</h3>
+        <p style={{ color: "var(--ink-muted)", fontSize: "0.9375rem", marginBottom: "1.25rem" }}>
+          Found something broken? Have a thought? Tell us — we read everything.
+        </p>
+
+        <div className="feedback-kind-row">
+          <button
+            type="button"
+            className={`feedback-kind-btn ${kind === "feedback" ? "feedback-kind-active" : ""}`}
+            onClick={() => setKind("feedback")}
+          >
+            <div className="feedback-kind-title">Share feedback</div>
+            <div className="feedback-kind-sub">Ideas, thoughts, what's confusing</div>
+          </button>
+          <button
+            type="button"
+            className={`feedback-kind-btn ${kind === "bug" ? "feedback-kind-active" : ""}`}
+            onClick={() => setKind("bug")}
+          >
+            <div className="feedback-kind-title">Report a bug</div>
+            <div className="feedback-kind-sub">Something not working right</div>
+          </button>
+        </div>
+
+        <label className="auth-label">
+          {kind === "bug" ? "What happened?" : "What's on your mind?"}
+          <textarea
+            className="auth-input"
+            rows={6}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder={kind === "bug"
+              ? "Try-on failed when I picked the navy crewneck — said 'bad request'. Happened twice in a row."
+              : "I wish I could favorite items. Or — what would happen if the AI...?"
+            }
+            autoFocus
+          />
+        </label>
+
+        {kind === "bug" && (
+          <div className="feedback-meta-row">
+            <span className="feedback-meta-label">We'll include:</span>
+            <span className="feedback-meta-value">current tab, browser info</span>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: "0.625rem", marginTop: "1rem" }}>
+          <button className="btn-ghost" onClick={onClose} style={{ flex: 1 }}>Cancel</button>
+          <button
+            className="btn-primary"
+            onClick={handleSubmit}
+            disabled={submitting || !message.trim()}
+            style={{ flex: 2 }}
+          >
+            {submitting ? "Sending..." : "Send"}
+          </button>
+        </div>
+
+        <p style={{ fontSize: "0.6875rem", color: "var(--ink-muted)", textAlign: "center", marginTop: "1rem", letterSpacing: "0.05em" }}>
+          Submitted as {session?.user?.email || "anonymous"}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ─── SELFIE LOGGER ──────────────────────────────────────────────────────────
 function SelfieLogger({ wardrobe, session, profile, onLogged, showNotification }) {
   const [stage, setStage] = useState("idle"); // idle | analyzing | confirm
@@ -607,16 +776,17 @@ function SelfieLogger({ wardrobe, session, profile, onLogged, showNotification }
     setConfirmedIds([]);
   };
 
-  const handleFile = (e) => {
+  const handleFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      setSelfieDataUrl(reader.result);
-      analyzeSelfie(reader.result);
-    };
-    reader.readAsDataURL(file);
     e.target.value = "";
+    try {
+      const compressed = await compressImage(file);
+      setSelfieDataUrl(compressed);
+      analyzeSelfie(compressed);
+    } catch (err) {
+      showNotification("Couldn't read photo: " + err.message);
+    }
   };
 
   const analyzeSelfie = async (dataUrl) => {
@@ -763,14 +933,21 @@ Respond ONLY with valid JSON:
 
   return (
     <>
-      <button className="selfie-fab" onClick={open} title="Log what I'm wearing" disabled={stage === "analyzing"}>
-        {stage === "analyzing" ? (
-          <div className="fab-spinner" />
-        ) : (
-          <Icon.Camera />
-        )}
-        <span className="fab-label">Log fit</span>
-      </button>
+      <div className="selfie-fab-wrap">
+        <span className="selfie-fab-help">
+          <HelpTip label="How Log fit works">
+            <strong>Tap after you get dressed.</strong> Snap a mirror selfie, full-body shot, or flat-lay of your outfit. VESTIS reads the photo and auto-logs which wardrobe items you wore — no manual tracking needed. Confirms ambiguous matches; auto-logs obvious ones.
+          </HelpTip>
+        </span>
+        <button className="selfie-fab" onClick={open} title="Log what I'm wearing" disabled={stage === "analyzing"}>
+          {stage === "analyzing" ? (
+            <div className="fab-spinner" />
+          ) : (
+            <Icon.Camera />
+          )}
+          <span className="fab-label">Log fit</span>
+        </button>
+      </div>
       <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} hidden />
 
       {stage === "analyzing" && (
@@ -971,13 +1148,16 @@ Respond ONLY with valid JSON, no markdown, no preamble:
     }
   };
 
-  const handleFile = (e) => {
+  const handleFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => analyzePhoto(reader.result);
-    reader.readAsDataURL(file);
     e.target.value = "";
+    try {
+      const compressed = await compressImage(file);
+      analyzePhoto(compressed);
+    } catch (err) {
+      showNotification("Couldn't read photo: " + err.message);
+    }
   };
 
   // Compute dashboard stats
@@ -1069,7 +1249,12 @@ Respond ONLY with valid JSON, no markdown, no preamble:
 
       <div className="section-header" style={{ marginTop: wardrobe.length > 0 ? "1rem" : "0" }}>
         <div>
-          <h2 className="section-title">{wardrobe.length === 0 ? "Your Wardrobe" : "All Items"}</h2>
+          <h2 className="section-title">
+            {wardrobe.length === 0 ? "Your Wardrobe" : "All Items"}
+            <HelpTip label="How adding photos works">
+              <strong>For best results:</strong> plain background, good lighting, just the garment laid flat or hung up. Phone screenshots from store websites work great too. VESTIS uses AI to auto-tag color, style, and category — clearer photos = sharper tags.
+            </HelpTip>
+          </h2>
           {wardrobe.length === 0 && <p className="section-sub">Start by adding a piece — VESTIS does the rest.</p>}
         </div>
       </div>
@@ -1366,16 +1551,17 @@ Respond ONLY with valid JSON, no markdown:
     }
   };
 
-  const handleInspirationFile = (e) => {
+  const handleInspirationFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      setInspirationPhoto(reader.result);
-      setLookAnalysis(null);
-    };
-    reader.readAsDataURL(file);
     e.target.value = "";
+    try {
+      const compressed = await compressImage(file);
+      setInspirationPhoto(compressed);
+      setLookAnalysis(null);
+    } catch (err) {
+      showNotification("Couldn't read photo: " + err.message);
+    }
   };
 
   const analyzeInspiration = async () => {
@@ -1717,13 +1903,17 @@ function TryOnTab({ wardrobe, session, showNotification }) {
     setKeyEntered(false);
   };
 
-  const handlePersonFile = (e) => {
+  const handlePersonFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setPersonPhoto(reader.result);
-    reader.readAsDataURL(file);
     e.target.value = "";
+    try {
+      // Fashn handles up to 1536px well; compress to that for try-on fidelity
+      const compressed = await compressImage(file, { maxDim: 1280, quality: 0.88 });
+      setPersonPhoto(compressed);
+    } catch (err) {
+      showNotification("Couldn't read photo: " + err.message);
+    }
   };
 
   const garmentsWithPhotos = wardrobe.filter(i => i.image_url);
@@ -1732,7 +1922,7 @@ function TryOnTab({ wardrobe, session, showNotification }) {
     if (!personPhoto || !selectedGarment) return;
     setGenerating(true);
     try {
-      // Submit job to Fashn
+      // Submit job to Fashn (v1.6 API structure)
       const submitRes = await fetch("https://api.fashn.ai/v1/run", {
         method: "POST",
         headers: {
@@ -1740,13 +1930,18 @@ function TryOnTab({ wardrobe, session, showNotification }) {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model_image: personPhoto,
-          garment_image: selectedGarment.image_url,
-          category: "auto"
+          model_name: "tryon-v1.6",
+          inputs: {
+            model_image: personPhoto,
+            garment_image: selectedGarment.image_url,
+            category: "auto"
+          }
         })
       });
       const submitData = await submitRes.json();
-      if (!submitData.id) throw new Error(submitData.error || "Failed to submit");
+      if (!submitRes.ok || !submitData.id) {
+        throw new Error(submitData.error?.message || submitData.error || submitData.message || "Submission failed");
+      }
 
       // Poll for result
       let pollCount = 0;
@@ -1822,7 +2017,12 @@ function TryOnTab({ wardrobe, session, showNotification }) {
       <div className="tryon-flow">
         <div className="tryon-step">
           <div className="step-number">1</div>
-          <h3 className="step-title">Your photo</h3>
+          <h3 className="step-title">
+            Your photo
+            <HelpTip label="How Try-On works">
+              <strong>Best results:</strong> stand against a plain wall, full body in frame (head to feet), neutral or fitted clothes so the AI can map the new garment cleanly. Good lighting is key. The clearer the photo, the more realistic the try-on.
+            </HelpTip>
+          </h3>
           {personPhoto ? (
             <div className="person-preview">
               <img src={personPhoto} alt="You" />
@@ -2633,6 +2833,53 @@ function TripPlanView({ trip, onEdit, onBack }) {
 }
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
+
+// Compress an uploaded image file to a max dimension and quality.
+// Returns a data URL. Defaults: max 1024px on longest side, JPEG 85% quality.
+// Drops typical iPhone photos from ~3MB to ~150-300KB while preserving visual quality.
+async function compressImage(file, { maxDim = 1024, quality = 0.85 } = {}) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        // Calculate new dimensions preserving aspect ratio
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round(height * (maxDim / width));
+            width = maxDim;
+          } else {
+            width = Math.round(width * (maxDim / height));
+            height = maxDim;
+          }
+        }
+
+        // Draw to canvas and export as JPEG
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        // White background so any transparent PNG areas come through cleanly
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+
+        try {
+          const dataUrl = canvas.toDataURL("image/jpeg", quality);
+          resolve(dataUrl);
+        } catch (err) {
+          reject(err);
+        }
+      };
+      img.onerror = () => reject(new Error("Image failed to load"));
+      img.src = e.target.result;
+    };
+    reader.onerror = () => reject(new Error("File read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
 function daysSince(isoDate) {
   if (!isoDate) return null;
   const then = new Date(isoDate);
@@ -3712,6 +3959,68 @@ body {
 }
 .pref-btn:hover { background: var(--cream-dark); border-color: var(--ink); }
 
+/* Feedback button in header */
+.feedback-btn {
+  background: transparent; border: 1px solid var(--line);
+  color: var(--ink-muted); padding: 0.4rem 0.875rem;
+  border-radius: 100px;
+  font-family: inherit; font-size: 0.8125rem; font-weight: 500;
+  cursor: pointer; transition: all 0.2s;
+}
+.feedback-btn:hover {
+  border-color: var(--ink); color: var(--ink);
+  background: var(--cream-dark);
+}
+
+/* Feedback modal */
+.feedback-modal { max-width: 520px; }
+.feedback-submitted {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 2.5rem 2rem;
+  animation: feedbackFadeIn 0.3s ease;
+}
+@keyframes feedbackFadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+.feedback-check {
+  width: 56px; height: 56px; border-radius: 50%;
+  background: var(--success); color: white;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.75rem; font-weight: 600;
+}
+.feedback-kind-row {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 0.5rem; margin-bottom: 1rem;
+}
+.feedback-kind-btn {
+  padding: 0.875rem 1rem;
+  background: white; border: 2px solid var(--line);
+  border-radius: 12px;
+  font-family: inherit; cursor: pointer; transition: all 0.15s;
+  text-align: left;
+}
+.feedback-kind-btn:hover { border-color: var(--accent-light); }
+.feedback-kind-active {
+  border-color: var(--ink); background: var(--cream);
+}
+.feedback-kind-title {
+  font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem;
+}
+.feedback-kind-sub {
+  font-size: 0.75rem; color: var(--ink-muted); line-height: 1.3;
+}
+.feedback-meta-row {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.625rem 0.875rem;
+  background: var(--cream); border-radius: 8px;
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+}
+.feedback-meta-label {
+  font-weight: 600; letter-spacing: 0.05em;
+  color: var(--ink-muted); text-transform: uppercase;
+  font-size: 0.6875rem;
+}
+.feedback-meta-value { color: var(--ink-soft); }
+
 /* Style preference modal */
 .style-pref-modal { max-width: 460px; }
 .style-pref-options {
@@ -4070,9 +4379,11 @@ body {
   .activity-grid { grid-template-columns: 1fr 1fr; }
   .day-activities { grid-template-columns: 1fr 1fr; }
   .pref-btn span { display: none; }
+  .feedback-btn { padding: 0.35rem 0.7rem; font-size: 0.75rem; }
   .bag-grid { grid-template-columns: 1fr; }
   .special-events-grid { grid-template-columns: 1fr; }
-  .selfie-fab { bottom: 5rem; right: 1rem; padding: 0.75rem 1rem; }
+  .selfie-fab-wrap { bottom: 5rem; right: 1rem; }
+  .selfie-fab { padding: 0.75rem 1rem; }
   .fab-label { display: none; }
   .selfie-fab svg { width: 22px; height: 22px; }
   .dash-stats { grid-template-columns: 1fr 1fr; }
