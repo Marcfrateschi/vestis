@@ -42,6 +42,7 @@ const Icon = {
   Trash: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/></svg>,
   LogOut: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
   Info: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>,
+  DNA: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 2c0 4 4 6 8 8s8 4 8 8M4 22c0-4 4-6 8-8s8-4 8-8"/><line x1="6" y1="6" x2="18" y2="6"/><line x1="6" y1="18" x2="18" y2="18"/><line x1="7" y1="10" x2="17" y2="10"/><line x1="7" y1="14" x2="17" y2="14"/></svg>,
 };
 
 // Reusable help tooltip: tap the ⓘ to expand a short tip
@@ -526,6 +527,7 @@ function App() {
       <nav className="tab-nav">
         {[
           { id: "wardrobe", label: "Wardrobe", icon: Icon.Hanger },
+          { id: "dna", label: "DNA", icon: Icon.DNA },
           { id: "style", label: "Style Me", icon: Icon.Sparkle },
           { id: "tryon", label: "Try On", icon: Icon.Mirror },
           { id: "pack", label: "Pack Smart", icon: Icon.Suitcase },
@@ -553,6 +555,7 @@ function App() {
           />
         )}
         {tab === "style" && <StyleTab wardrobe={wardrobe} profile={profile} showNotification={showNotification} />}
+        {tab === "dna" && <DNATab wardrobe={wardrobe} session={session} profile={profile} showNotification={showNotification} />}
         {tab === "tryon" && <TryOnTab wardrobe={wardrobe} session={session} showNotification={showNotification} />}
         {tab === "pack" && <PackTab wardrobe={wardrobe} session={session} profile={profile} showNotification={showNotification} />}
       </main>
@@ -1477,6 +1480,313 @@ function ItemDetail({ item, onClose, onRemove, onUpdate }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── DNA TAB ────────────────────────────────────────────────────────────────
+function DNATab({ wardrobe, session, profile, showNotification }) {
+  const [analyzing, setAnalyzing] = useState(false);
+  const [dna, setDna] = useState(null);
+  const [lastComputedCount, setLastComputedCount] = useState(0);
+
+  // Load cached DNA from profile on mount
+  useEffect(() => {
+    if (profile?.wardrobe_dna) {
+      try {
+        const cached = typeof profile.wardrobe_dna === "string"
+          ? JSON.parse(profile.wardrobe_dna)
+          : profile.wardrobe_dna;
+        setDna(cached);
+        setLastComputedCount(cached.computed_at_count || 0);
+      } catch {}
+    }
+  }, [profile?.wardrobe_dna]);
+
+  const itemsAddedSince = wardrobe.length - lastComputedCount;
+  const isStale = dna && itemsAddedSince >= 5;
+  const hasMinimum = wardrobe.length >= 5;
+
+  const computeDNA = async () => {
+    if (!hasMinimum) {
+      showNotification("Add at least 5 items first");
+      return;
+    }
+    setAnalyzing(true);
+    try {
+      const wardrobeText = wardrobe.map(i =>
+        `- ${i.name} (Category: ${i.category}, Color: ${i.color}, Style: ${i.style}${i.season ? ", Season: " + i.season : ""}${i.details ? ", Details: " + i.details : ""})`
+      ).join("\n");
+
+      const styleNote = profile?.style_preference === "mens"
+        ? "User prefers men's clothing."
+        : profile?.style_preference === "womens"
+        ? "User prefers women's clothing."
+        : "";
+
+      const response = await fetch("/api/claude", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 2500,
+          messages: [{
+            role: "user",
+            content: `You are a personal wardrobe analyst. Analyze this person's wardrobe and produce their "Wardrobe DNA" — a multi-dimensional style profile.
+
+${styleNote}
+
+WARDROBE (${wardrobe.length} items):
+${wardrobeText}
+
+Analyze across these dimensions. Be honest and specific — generic answers aren't useful. Use the actual items to inform your analysis.
+
+Respond ONLY with valid JSON, no markdown:
+{
+  "headline": "one-line distinctive characterization of this wardrobe's personality (e.g. 'Refined classics with a modern edge')",
+  "style_breakdown": [
+    {"style": "Classic", "percent": 45, "evidence": "brief note on which items support this"},
+    {"style": "Modern", "percent": 30, "evidence": "..."}
+  ],
+  "palette": [
+    {"color": "Navy", "percent": 28, "role": "primary anchor"},
+    {"color": "Cream", "percent": 22, "role": "neutral base"}
+  ],
+  "formality": {
+    "tailored_percent": 25,
+    "smart_casual_percent": 45,
+    "casual_percent": 25,
+    "athletic_percent": 5,
+    "summary": "This wardrobe leans smart casual with formal capability"
+  },
+  "gaps": [
+    {"gap": "Light on outerwear — only 2 jackets for a wardrobe this size", "suggestion": "A versatile wool overcoat would unlock 6+ winter outfits"}
+  ],
+  "signature_pieces": ["3-5 items that define this wardrobe — the keystones"],
+  "rare_combinations": "one observation about an unexpected combination that works",
+  "personality_summary": "2-3 sentence portrait of who this person is, judged by their clothes. Be specific and a little provocative — like a sharp stylist would describe a client."
+}
+
+Style options to use: Classic, Modern, Refined, Casual, Streetwear, Athletic, Bohemian, Minimalist, Preppy, Edgy.
+Keep percentages adding to roughly 100 for style_breakdown.`
+          }]
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.content || !data.content[0]) {
+        throw new Error(data.error || data.detail?.error?.message || "Analysis failed");
+      }
+
+      const text = data.content[0].text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(text);
+      parsed.computed_at = new Date().toISOString();
+      parsed.computed_at_count = wardrobe.length;
+
+      // Save to profile
+      const { error } = await supabase
+        .from("profiles")
+        .update({ wardrobe_dna: parsed })
+        .eq("id", session.user.id);
+      if (error) throw error;
+
+      setDna(parsed);
+      setLastComputedCount(wardrobe.length);
+      showNotification("Wardrobe DNA computed");
+    } catch (err) {
+      showNotification("DNA failed: " + err.message);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  return (
+    <div className="tab-content">
+      <div className="section-header">
+        <div>
+          <h2 className="section-title">
+            Wardrobe DNA
+            <HelpTip label="What is Wardrobe DNA?">
+              <strong>Your style profile, decoded.</strong> AI analyzes every item in your wardrobe and shows you who you are by what you own — style breakdown, color palette, formality lean, and the gaps worth filling. Recompute anytime as your wardrobe evolves.
+            </HelpTip>
+          </h2>
+          <p className="section-sub">Who you are, decoded from what you wear</p>
+        </div>
+      </div>
+
+      {!hasMinimum && (
+        <div className="dna-empty">
+          <h3 className="dna-empty-title">Add 5+ items to unlock your DNA</h3>
+          <p className="dna-empty-sub">
+            VESTIS needs a baseline before the analysis is meaningful. You currently have <strong>{wardrobe.length}</strong> {wardrobe.length === 1 ? "item" : "items"}.
+          </p>
+        </div>
+      )}
+
+      {hasMinimum && !dna && (
+        <div className="dna-empty">
+          <h3 className="dna-empty-title">Decode your wardrobe</h3>
+          <p className="dna-empty-sub">
+            Run analysis on your {wardrobe.length} items. Takes about 15 seconds.
+          </p>
+          <button
+            className="btn-primary btn-large"
+            onClick={computeDNA}
+            disabled={analyzing}
+          >
+            {analyzing ? "Analyzing..." : <><Icon.Sparkle /> Compute my DNA</>}
+          </button>
+        </div>
+      )}
+
+      {dna && (
+        <>
+          {isStale && (
+            <div className="dna-stale-banner">
+              <span>You've added {itemsAddedSince} items since last analysis.</span>
+              <button className="btn-ghost btn-small" onClick={computeDNA} disabled={analyzing}>
+                {analyzing ? "Refreshing..." : "Refresh DNA"}
+              </button>
+            </div>
+          )}
+
+          <div className="dna-hero">
+            <div className="dna-hero-mark">V</div>
+            <div className="dna-hero-content">
+              <div className="dna-hero-label">Your Wardrobe DNA</div>
+              <h3 className="dna-hero-headline">{dna.headline}</h3>
+            </div>
+          </div>
+
+          {dna.personality_summary && (
+            <div className="dna-summary">
+              <p>{dna.personality_summary}</p>
+            </div>
+          )}
+
+          {/* Style breakdown */}
+          {dna.style_breakdown && dna.style_breakdown.length > 0 && (
+            <div className="dna-section">
+              <h4 className="dna-section-title">Style breakdown</h4>
+              <div className="dna-bars">
+                {dna.style_breakdown.map((s, i) => (
+                  <div key={i} className="dna-bar-row">
+                    <div className="dna-bar-label-row">
+                      <span className="dna-bar-label">{s.style}</span>
+                      <span className="dna-bar-percent">{s.percent}%</span>
+                    </div>
+                    <div className="dna-bar-track">
+                      <div className="dna-bar-fill" style={{ width: `${Math.min(100, s.percent)}%` }} />
+                    </div>
+                    {s.evidence && <div className="dna-bar-evidence">{s.evidence}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Palette */}
+          {dna.palette && dna.palette.length > 0 && (
+            <div className="dna-section">
+              <h4 className="dna-section-title">Your palette</h4>
+              <div className="dna-palette">
+                {dna.palette.map((p, i) => (
+                  <div key={i} className="dna-palette-item">
+                    <div
+                      className="dna-palette-swatch"
+                      style={{ background: colorToCSS(p.color) }}
+                    />
+                    <div className="dna-palette-info">
+                      <div className="dna-palette-color">{p.color}</div>
+                      <div className="dna-palette-percent">{p.percent}%</div>
+                      {p.role && <div className="dna-palette-role">{p.role}</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Formality */}
+          {dna.formality && (
+            <div className="dna-section">
+              <h4 className="dna-section-title">Formality lean</h4>
+              <div className="dna-formality-stack">
+                <div className="dna-formality-bar">
+                  {dna.formality.tailored_percent > 0 && (
+                    <div className="dna-formality-segment dna-tailored" style={{ width: `${dna.formality.tailored_percent}%` }} title={`Tailored ${dna.formality.tailored_percent}%`}>
+                      {dna.formality.tailored_percent >= 12 && `Tailored ${dna.formality.tailored_percent}%`}
+                    </div>
+                  )}
+                  {dna.formality.smart_casual_percent > 0 && (
+                    <div className="dna-formality-segment dna-smart-casual" style={{ width: `${dna.formality.smart_casual_percent}%` }}>
+                      {dna.formality.smart_casual_percent >= 12 && `Smart Casual ${dna.formality.smart_casual_percent}%`}
+                    </div>
+                  )}
+                  {dna.formality.casual_percent > 0 && (
+                    <div className="dna-formality-segment dna-casual" style={{ width: `${dna.formality.casual_percent}%` }}>
+                      {dna.formality.casual_percent >= 12 && `Casual ${dna.formality.casual_percent}%`}
+                    </div>
+                  )}
+                  {dna.formality.athletic_percent > 0 && (
+                    <div className="dna-formality-segment dna-athletic" style={{ width: `${dna.formality.athletic_percent}%` }}>
+                      {dna.formality.athletic_percent >= 12 && `Athletic ${dna.formality.athletic_percent}%`}
+                    </div>
+                  )}
+                </div>
+                {dna.formality.summary && <p className="dna-formality-summary">{dna.formality.summary}</p>}
+              </div>
+            </div>
+          )}
+
+          {/* Signature pieces */}
+          {dna.signature_pieces && dna.signature_pieces.length > 0 && (
+            <div className="dna-section">
+              <h4 className="dna-section-title">Signature pieces</h4>
+              <p className="dna-section-sub">The keystones — items that define your wardrobe.</p>
+              <div className="dna-signature-list">
+                {dna.signature_pieces.map((piece, i) => (
+                  <div key={i} className="dna-signature-item">
+                    <span className="dna-signature-marker">{String(i + 1).padStart(2, "0")}</span>
+                    <span>{piece}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Rare combinations */}
+          {dna.rare_combinations && (
+            <div className="dna-section dna-callout">
+              <h4 className="dna-callout-label">A thing we noticed</h4>
+              <p className="dna-callout-text">{dna.rare_combinations}</p>
+            </div>
+          )}
+
+          {/* Gaps */}
+          {dna.gaps && dna.gaps.length > 0 && (
+            <div className="dna-section">
+              <h4 className="dna-section-title">Wardrobe gaps</h4>
+              <p className="dna-section-sub">Worth filling — these add real outfit options.</p>
+              <div className="dna-gaps-list">
+                {dna.gaps.map((g, i) => (
+                  <div key={i} className="dna-gap-row">
+                    <div className="dna-gap-name">{g.gap}</div>
+                    {g.suggestion && <div className="dna-gap-suggestion">{g.suggestion}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="dna-footer">
+            <span>Last computed {dna.computed_at ? new Date(dna.computed_at).toLocaleDateString() : "—"}</span>
+            <button className="btn-ghost btn-small" onClick={computeDNA} disabled={analyzing}>
+              {analyzing ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -3175,6 +3485,237 @@ body {
 }
 .dash-stat-warn .dash-stat-num { color: var(--accent); }
 
+/* ─── DNA TAB ─── */
+.dna-empty {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 3rem 2rem;
+  text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 1rem;
+}
+.dna-empty-title {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.75rem; font-weight: 500;
+  margin: 0; color: var(--ink);
+}
+.dna-empty-sub {
+  font-size: 0.9375rem; color: var(--ink-muted);
+  max-width: 400px; line-height: 1.5;
+}
+
+.dna-stale-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 0.75rem;
+  padding: 0.75rem 1.125rem;
+  background: rgba(193, 154, 107, 0.12);
+  border: 1px solid var(--gold);
+  border-radius: 10px;
+  margin-bottom: 1.25rem;
+  font-size: 0.875rem; color: var(--ink-soft);
+}
+
+.dna-hero {
+  display: flex; align-items: center; gap: 1.25rem;
+  background: var(--ink); color: var(--cream);
+  border-radius: 16px;
+  padding: 1.75rem 1.5rem;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 12px 32px rgba(26, 26, 26, 0.15);
+}
+.dna-hero-mark {
+  width: 54px; height: 54px; border-radius: 50%;
+  background: var(--gold); color: var(--ink);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Italiana', 'Cormorant Garamond', serif;
+  font-size: 1.625rem;
+  flex-shrink: 0;
+}
+.dna-hero-content { flex: 1; min-width: 0; }
+.dna-hero-label {
+  font-size: 0.625rem; font-weight: 600; letter-spacing: 0.25em;
+  text-transform: uppercase; color: var(--gold);
+  margin-bottom: 0.375rem;
+}
+.dna-hero-headline {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.5rem; font-weight: 500; line-height: 1.25;
+  margin: 0;
+}
+
+.dna-summary {
+  background: var(--cream);
+  border-left: 3px solid var(--gold);
+  border-radius: 0 10px 10px 0;
+  padding: 1rem 1.25rem;
+  margin-bottom: 2rem;
+}
+.dna-summary p {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.0625rem; line-height: 1.55;
+  color: var(--ink); font-style: italic;
+  margin: 0;
+}
+
+.dna-section {
+  margin-bottom: 2.25rem;
+}
+.dna-section-title {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.5rem; font-weight: 500;
+  margin: 0 0 0.5rem;
+  color: var(--ink);
+}
+.dna-section-sub {
+  font-size: 0.875rem; color: var(--ink-muted);
+  margin: 0 0 1rem;
+}
+
+.dna-bars { display: flex; flex-direction: column; gap: 1rem; }
+.dna-bar-row { display: flex; flex-direction: column; gap: 0.375rem; }
+.dna-bar-label-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+}
+.dna-bar-label {
+  font-weight: 600; font-size: 0.9375rem; color: var(--ink);
+}
+.dna-bar-percent {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.25rem; font-weight: 500;
+  color: var(--gold);
+}
+.dna-bar-track {
+  height: 8px; background: var(--line);
+  border-radius: 100px; overflow: hidden;
+}
+.dna-bar-fill {
+  height: 100%; background: var(--ink);
+  border-radius: 100px;
+  transition: width 0.8s ease-out;
+}
+.dna-bar-evidence {
+  font-size: 0.75rem; color: var(--ink-muted);
+  font-style: italic; margin-top: 0.125rem;
+}
+
+.dna-palette {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+.dna-palette-item {
+  background: white; border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75rem 0.875rem;
+  display: flex; align-items: center; gap: 0.75rem;
+}
+.dna-palette-swatch {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  flex-shrink: 0;
+  box-shadow: inset 0 -2px 6px rgba(0, 0, 0, 0.08);
+}
+.dna-palette-info { flex: 1; min-width: 0; }
+.dna-palette-color {
+  font-weight: 600; font-size: 0.8125rem; color: var(--ink);
+}
+.dna-palette-percent {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.125rem; font-weight: 500;
+  color: var(--gold);
+  line-height: 1.1;
+}
+.dna-palette-role {
+  font-size: 0.6875rem; color: var(--ink-muted);
+  font-style: italic;
+}
+
+.dna-formality-stack { }
+.dna-formality-bar {
+  display: flex; height: 36px;
+  border-radius: 8px; overflow: hidden;
+  background: var(--cream);
+}
+.dna-formality-segment {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.6875rem; font-weight: 600;
+  letter-spacing: 0.03em;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  transition: width 0.6s ease-out;
+  overflow: hidden; white-space: nowrap;
+}
+.dna-tailored { background: #2a2520; }
+.dna-smart-casual { background: var(--accent); }
+.dna-casual { background: var(--gold); }
+.dna-athletic { background: #6b8e6b; }
+.dna-formality-summary {
+  margin-top: 0.625rem;
+  font-size: 0.875rem; color: var(--ink-soft);
+  font-style: italic;
+}
+
+.dna-signature-list { display: flex; flex-direction: column; gap: 0.625rem; }
+.dna-signature-item {
+  display: flex; align-items: center; gap: 0.875rem;
+  padding: 0.875rem 1rem;
+  background: white; border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 0.9375rem;
+}
+.dna-signature-marker {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.125rem; font-weight: 600;
+  color: var(--gold);
+  letter-spacing: 0.05em;
+}
+
+.dna-callout {
+  background: linear-gradient(135deg, var(--cream) 0%, white 100%);
+  border: 1px dashed var(--gold);
+  border-radius: 12px;
+  padding: 1.125rem 1.25rem;
+}
+.dna-callout-label {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1rem; font-weight: 600;
+  margin: 0 0 0.375rem;
+  color: var(--gold);
+  font-style: italic;
+}
+.dna-callout-text {
+  font-size: 0.9375rem; color: var(--ink); line-height: 1.5;
+  margin: 0;
+}
+
+.dna-gaps-list { display: flex; flex-direction: column; gap: 0.75rem; }
+.dna-gap-row {
+  padding: 1rem 1.125rem;
+  background: white; border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+}
+.dna-gap-name {
+  font-weight: 600; font-size: 0.9375rem;
+  color: var(--ink); margin-bottom: 0.375rem;
+}
+.dna-gap-suggestion {
+  font-size: 0.8125rem; color: var(--ink-soft);
+  font-style: italic; line-height: 1.4;
+}
+
+.dna-footer {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 2rem; padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.75rem; color: var(--ink-muted);
+}
+
+.btn-small {
+  padding: 0.375rem 0.875rem !important;
+  font-size: 0.75rem !important;
+}
+
 .auth-wrap {
   min-height: 100vh; display: flex; align-items: center; justify-content: center;
   padding: 2rem; position: relative; overflow: hidden;
@@ -4390,6 +4931,10 @@ body {
   .dash-greeting-name { font-size: 1.875rem; }
   .dash-insight-card { padding: 1rem 1.125rem; }
   .dash-insight-text { font-size: 0.9375rem; }
+  .dna-palette { grid-template-columns: 1fr 1fr; }
+  .dna-hero { padding: 1.25rem 1.125rem; gap: 1rem; }
+  .dna-hero-headline { font-size: 1.25rem; }
+  .dna-hero-mark { width: 44px; height: 44px; font-size: 1.375rem; }
 }
 `;
 
