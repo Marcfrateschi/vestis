@@ -399,6 +399,23 @@ function App() {
     }
   };
 
+  const updateProfile = async (updates) => {
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .update(updates)
+        .eq("id", session.user.id)
+        .select()
+        .single();
+      if (error) throw error;
+      setProfile(data);
+      return data;
+    } catch (err) {
+      showNotification("Couldn't save: " + err.message);
+      return null;
+    }
+  };
+
   const loadWardrobe = async () => {
     setWardrobeLoading(true);
     try {
@@ -548,9 +565,11 @@ function App() {
             wardrobe={wardrobe}
             loading={wardrobeLoading}
             session={session}
+            profile={profile}
             onAdd={addItem}
             onRemove={removeItem}
             onUpdate={updateItem}
+            onUpdateProfile={updateProfile}
             showNotification={showNotification}
           />
         )}
@@ -1041,11 +1060,20 @@ Respond ONLY with valid JSON:
 }
 
 // ─── WARDROBE TAB ───────────────────────────────────────────────────────────
-function WardrobeTab({ wardrobe, loading, session, onAdd, onRemove, onUpdate, showNotification }) {
+function WardrobeTab({ wardrobe, loading, session, profile, onAdd, onRemove, onUpdate, onUpdateProfile, showNotification }) {
   const [filter, setFilter] = useState("All");
   const [analyzing, setAnalyzing] = useState(false);
+  const [analyzingStatus, setAnalyzingStatus] = useState("Analyzing...");
+  const [enhanceNext, setEnhanceNext] = useState(profile?.enhance_photos_default ?? true);
   const [detail, setDetail] = useState(null);
   const fileInputRef = useRef();
+
+  // Sync enhance default when profile loads/changes
+  useEffect(() => {
+    if (profile?.enhance_photos_default !== undefined) {
+      setEnhanceNext(profile.enhance_photos_default);
+    }
+  }, [profile?.enhance_photos_default]);
 
   const categories = ["All", ...new Set(wardrobe.map(i => i.category))];
   const wearFilters = ["Recently worn", "Dormant 30+", "Dormant 60+", "Dormant 90+", "Never worn"];
@@ -1156,10 +1184,27 @@ Respond ONLY with valid JSON, no markdown, no preamble:
     if (!file) return;
     e.target.value = "";
     try {
-      const compressed = await compressImage(file);
-      analyzePhoto(compressed);
+      setAnalyzingStatus("Reading photo...");
+      let processed = await compressImage(file);
+
+      if (enhanceNext) {
+        setAnalyzing(true);
+        try {
+          processed = await enhanceImage(processed, {
+            onProgress: (msg) => setAnalyzingStatus(msg),
+          });
+        } catch (err) {
+          // If enhancement fails, fall back to compressed original
+          console.warn("Enhancement failed, using original:", err);
+          showNotification("Enhancement skipped — using original photo");
+        }
+      }
+
+      setAnalyzingStatus("Analyzing...");
+      analyzePhoto(processed);
     } catch (err) {
       showNotification("Couldn't read photo: " + err.message);
+      setAnalyzing(false);
     }
   };
 
@@ -1266,11 +1311,45 @@ Respond ONLY with valid JSON, no markdown, no preamble:
         <button className="upload-card upload-card-primary" onClick={() => fileInputRef.current?.click()} disabled={analyzing}>
           <Icon.Camera />
           <div>
-            <div className="upload-title">{analyzing ? "Analyzing..." : "Add a photo"}</div>
+            <div className="upload-title">{analyzing ? analyzingStatus : "Add a photo"}</div>
             <div className="upload-sub">Camera, photo library, or website</div>
           </div>
         </button>
         <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFile} hidden />
+      </div>
+
+      <div className="enhance-toggle-row">
+        <label className="enhance-toggle">
+          <input
+            type="checkbox"
+            checked={enhanceNext}
+            onChange={(e) => setEnhanceNext(e.target.checked)}
+            disabled={analyzing}
+          />
+          <span className="enhance-toggle-track">
+            <span className="enhance-toggle-dot" />
+          </span>
+          <span className="enhance-toggle-text">
+            <span className="enhance-toggle-label">Enhance photo</span>
+            <span className="enhance-toggle-sub">Auto-removes background for a clean catalog look</span>
+          </span>
+        </label>
+        {profile && (
+          <button
+            type="button"
+            className="enhance-default-btn"
+            onClick={async () => {
+              const newDefault = !profile.enhance_photos_default;
+              if (onUpdateProfile) {
+                await onUpdateProfile({ enhance_photos_default: newDefault });
+                showNotification(newDefault ? "Will enhance new photos by default" : "Won't enhance new photos by default");
+              }
+            }}
+            title="Change the default for all future uploads"
+          >
+            {profile.enhance_photos_default ? "Default: On" : "Default: Off"}
+          </button>
+        )}
       </div>
 
       <div className="filter-row">
@@ -3144,6 +3223,56 @@ function TripPlanView({ trip, onEdit, onBack }) {
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
+// Remove the background from an image using @imgly/background-removal.
+// Returns a data URL with transparent background, then composited onto cream.
+// Lazy-loaded — package only downloads when first used (~30MB model, cached after).
+let _bgRemovalModule = null;
+async function enhanceImage(dataUrl, { onProgress } = {}) {
+  // Lazy import
+  if (!_bgRemovalModule) {
+    onProgress?.("Loading enhancement engine...");
+    _bgRemovalModule = await import("@imgly/background-removal");
+  }
+  const removeBackground = _bgRemovalModule.default || _bgRemovalModule.removeBackground;
+
+  onProgress?.("Removing background...");
+  // Pass the data URL directly; library accepts URLs and blobs
+  const blob = await removeBackground(dataUrl, {
+    output: { format: "image/png", quality: 0.9 },
+    progress: (key, current, total) => {
+      if (total > 0) {
+        const pct = Math.round((current / total) * 100);
+        onProgress?.(`${key.includes("fetch") ? "Loading model" : "Processing"} ${pct}%`);
+      }
+    },
+  });
+
+  // Composite onto cream background for visual consistency in grid
+  onProgress?.("Polishing...");
+  const transparentUrl = await new Promise((res) => {
+    const reader = new FileReader();
+    reader.onload = () => res(reader.result);
+    reader.readAsDataURL(blob);
+  });
+
+  // Composite onto cream
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#f5f0e6"; // cream background
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/jpeg", 0.9));
+    };
+    img.onerror = () => reject(new Error("Composite failed"));
+    img.src = transparentUrl;
+  });
+}
+
 // Compress an uploaded image file to a max dimension and quality.
 // Returns a data URL. Defaults: max 1024px on longest side, JPEG 85% quality.
 // Drops typical iPhone photos from ~3MB to ~150-300KB while preserving visual quality.
@@ -3873,6 +4002,62 @@ body {
   display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;
 }
 .upload-row-single { grid-template-columns: 1fr; }
+
+/* Enhance toggle row */
+.enhance-toggle-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+  margin: -0.5rem 0 1.5rem;
+  padding: 0.75rem 1rem;
+  background: white; border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.enhance-toggle {
+  display: flex; align-items: center; gap: 0.875rem;
+  cursor: pointer;
+  flex: 1; min-width: 0;
+}
+.enhance-toggle input { display: none; }
+.enhance-toggle-track {
+  width: 42px; height: 24px;
+  background: var(--line-strong); border-radius: 100px;
+  position: relative; flex-shrink: 0;
+  transition: background 0.2s;
+}
+.enhance-toggle-dot {
+  position: absolute; top: 2px; left: 2px;
+  width: 20px; height: 20px;
+  background: white; border-radius: 50%;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+.enhance-toggle input:checked + .enhance-toggle-track {
+  background: var(--ink);
+}
+.enhance-toggle input:checked + .enhance-toggle-track .enhance-toggle-dot {
+  transform: translateX(18px);
+}
+.enhance-toggle-text {
+  display: flex; flex-direction: column; min-width: 0;
+}
+.enhance-toggle-label {
+  font-size: 0.875rem; font-weight: 600; color: var(--ink);
+}
+.enhance-toggle-sub {
+  font-size: 0.75rem; color: var(--ink-muted);
+}
+.enhance-default-btn {
+  background: transparent; border: 1px solid var(--line-strong);
+  color: var(--ink-soft); padding: 0.375rem 0.75rem;
+  border-radius: 100px;
+  font-family: inherit; font-size: 0.6875rem; font-weight: 600;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  cursor: pointer; transition: all 0.2s;
+  flex-shrink: 0;
+}
+.enhance-default-btn:hover {
+  border-color: var(--ink); color: var(--ink);
+}
 .upload-card-primary {
   background: linear-gradient(135deg, var(--ink) 0%, var(--ink-soft) 100%) !important;
   color: var(--cream) !important;
@@ -4935,6 +5120,8 @@ body {
   .dna-hero { padding: 1.25rem 1.125rem; gap: 1rem; }
   .dna-hero-headline { font-size: 1.25rem; }
   .dna-hero-mark { width: 44px; height: 44px; font-size: 1.375rem; }
+  .enhance-toggle-row { flex-direction: column; align-items: stretch; gap: 0.625rem; }
+  .enhance-default-btn { align-self: flex-start; }
 }
 `;
 
